@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MLP Training — Forward & Backward Pass</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ═══════════════ HEADER ═══════════════ -->
+<header>
+  <div>
+    <h1>MLP Training <span class="dim">— Forward &amp; Backward Pass</span></h1>
+    <p class="subtitle">Step through one complete training iteration, layer by layer</p>
+  </div>
+  <span id="epoch-badge" class="epoch-badge">Epoch 0</span>
+</header>
+
+<!-- ═══════════════ CONTROL BAR ═══════════════ -->
+<div class="ctrl-bar">
+
+  <div class="ctrl-group">
+    <span class="ctrl-label">Hidden Layers</span>
+    <div id="arch-row" class="arch-row"></div>
+    <div class="arch-btns">
+      <button class="btn-sm" id="btn-add">+ Layer</button>
+      <button class="btn-sm" id="btn-rm">− Layer</button>
+      <button class="btn-sm btn-reset" id="btn-init">↺ Reset weights</button>
+    </div>
+  </div>
+
+  <div class="ctrl-group">
+    <span class="ctrl-label">Learning Rate (α)</span>
+    <div class="slider-row">
+      <input type="range" id="sl-lr" min="-3" max="0" step="0.25" value="-1" />
+      <span class="slider-val" id="val-lr">0.1</span>
+    </div>
+    <span class="ctrl-label" style="margin-top:6px">Sample</span>
+    <select id="sel-sample"></select>
+  </div>
+
+  <div class="ctrl-group center">
+    <button class="btn-compute" id="btn-compute">▶ Compute Forward + Backward</button>
+    <div id="compute-hint" class="compute-hint">Select a sample and click to begin</div>
+  </div>
+
+</div>
+
+<!-- ═══════════════ STEP NAVIGATOR ═══════════════ -->
+<div id="step-bar" class="step-bar hidden">
+  <button class="btn-nav" id="btn-prev">← Prev</button>
+  <div class="step-info">
+    <div id="phase-tag" class="phase-tag"></div>
+    <div id="step-title" class="step-title"></div>
+    <div id="step-counter" class="step-counter"></div>
+  </div>
+  <button class="btn-nav" id="btn-next">Next →</button>
+</div>
+
+<!-- ═══════════════ MAIN AREA ═══════════════ -->
+<div class="main-grid">
+
+  <!-- Network SVG -->
+  <div class="card net-card">
+    <div id="net-container"></div>
+    <div id="net-placeholder" class="placeholder">
+      Click <strong>▶ Compute</strong> to start the training step visualization
+    </div>
+  </div>
+
+  <!-- Info panel -->
+  <div class="card info-card">
+    <div id="info-title" class="info-title"></div>
+    <div id="info-body" class="info-body">
+      <p class="muted">Step through the forward and backward pass to see the math at each layer.</p>
+    </div>
+    <div id="formula-box" class="formula-box" style="display:none"></div>
+    <!-- Update button shown only on the last step -->
+    <button id="btn-update" class="btn-update hidden">Apply Weight Update (α = <span id="lr-show">0.1</span>)</button>
+  </div>
+
+</div>
+
+<!-- ═══════════════ BOTTOM ═══════════════ -->
+<div class="bottom-grid">
+
+  <div class="card loss-card">
+    <div class="card-label">Loss over epochs</div>
+    <canvas id="loss-chart"></canvas>
+    <div id="loss-now" class="loss-now"></div>
+  </div>
+
+  <div class="card legend-card">
+    <div class="card-label">Legend</div>
+    <div class="legend">
+      <div class="leg-row"><span class="dot" style="background:#22c55e"></span>Forward signal / activation</div>
+      <div class="leg-row"><span class="dot" style="background:#f97316"></span>Backward gradient signal</div>
+      <div class="leg-row"><span class="dot" style="background:#3b82f6"></span>Weight update (Δw &gt; 0)</div>
+      <div class="leg-row"><span class="dot" style="background:#ef4444"></span>Weight update (Δw &lt; 0)</div>
+      <div class="leg-row"><span class="dot" style="background:#fbbf24;box-shadow:0 0 6px #fbbf24"></span>Current layer (highlighted)</div>
+    </div>
+  </div>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

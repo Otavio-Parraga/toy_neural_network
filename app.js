@@ -1,7 +1,7 @@
 /* ════════════════════════════════════════════════════════
    Configuration
    ════════════════════════════════════════════════════════ */
-const API   = "http://127.0.0.1:8080";
+const API   = "";
 const R     = 20;          // neuron radius (px)
 const MAX_N = 6;           // max neurons to draw per layer
 const FEAT  = ["Weight (kg)", "Ear Point.", "Meow/Bark", "Agility"];

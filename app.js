@@ -21,6 +21,8 @@ const st = {
   step: 0,
   lossChart: null,
   lossHistory: [],
+  batchSize: 1,       // mini-batch size B sent to /api/compute
+  focus: 0,           // index into data.batch.samples shown in the network
 };
 
 /* ════════════════════════════════════════════════════════
@@ -29,6 +31,7 @@ const st = {
 window.addEventListener("DOMContentLoaded", async () => {
   buildArchRow();
   wireControls();
+  wireBatchControls();
   await apiInit();
 });
 
@@ -126,6 +129,7 @@ async function apiInit() {
   st.steps = [];
 
   buildSampleSelect();
+  resetBatchUI();
   updateEpoch(0);
   document.getElementById("step-bar").classList.add("hidden");
   document.getElementById("net-placeholder").style.display = "flex";
@@ -145,15 +149,18 @@ async function apiCompute() {
   try {
     const res = await fetch(`${API}/api/compute`, {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ sample_idx: st.sample }),
+      body: JSON.stringify({ sample_idx: st.sample, batch_size: st.batchSize }),
     });
     if (!res.ok) throw new Error(res.status);
     st.data = await res.json();
+    st.focus = 0;
     st.steps = buildSteps(st.data);
     document.getElementById("net-placeholder").style.display = "none";
     document.getElementById("step-bar").classList.remove("hidden");
     document.getElementById("compute-hint").textContent =
-      `Sample ${st.sample + 1} computed. Step through the passes.`;
+      batchSizeOf(st.data) > 1
+        ? `Batch of ${batchSizeOf(st.data)} computed (starting at sample ${st.sample + 1}). Step through the passes.`
+        : `Sample ${st.sample + 1} computed. Step through the passes.`;
     goStep(0);
   } catch(e) {
     document.getElementById("compute-hint").textContent = "Error: " + e.message;
@@ -179,7 +186,7 @@ async function apiUpdate() {
   const improved = d.loss_after < d.loss_before;
 
   document.getElementById("loss-now").textContent =
-    `Loss: ${d.loss_before.toFixed(4)} → ${d.loss_after.toFixed(4)}  (${improved ? "▼ −" : "▲ +"}${Math.abs(pct)}%)`;
+    `${batchSizeOf(st.data) > 1 ? "Mean batch loss" : "Loss"}: ${d.loss_before.toFixed(4)} → ${d.loss_after.toFixed(4)}  (${improved ? "▼ −" : "▲ +"}${Math.abs(pct)}%)`;
 
   // Update the last step info to show the weight deltas
   const last = st.steps[st.steps.length - 1];
@@ -262,6 +269,7 @@ function goStep(n) {
 
   drawNetwork(step, st.data);
   renderInfo(step, st.data);
+  renderBatchPanel(step, st.data);
 }
 
 /* ════════════════════════════════════════════════════════
@@ -749,7 +757,7 @@ function renderLossChart() {
     data: {
       labels: st.lossHistory.map((_, i) => i + 1),
       datasets: [{
-        label: "Loss per epoch",
+        label: "Mean batch loss per update",
         data: st.lossHistory,
         borderColor: "#6366f1",
         backgroundColor: "rgba(99,102,241,.08)",
@@ -775,4 +783,124 @@ function renderLossChart() {
 
 function updateEpoch(n) {
   document.getElementById("epoch-badge").textContent = `Epoch ${n}`;
+}
+
+/* ════════════════════════════════════════════════════════
+   Mini-batch
+   The backend returns top-level fields for the focus sample
+   (first of the batch), except grad_w / grad_b, which are
+   batch-averaged: ∂L/∂W = (1/B) Σᵢ ∂Lᵢ/∂W.
+   data.batch.samples[k] holds the full per-sample results.
+   ════════════════════════════════════════════════════════ */
+
+// Per-sample fields swapped when the focus sample changes.
+// grad_w / grad_b are deliberately NOT swapped (they stay batch-averaged).
+const SAMPLE_FIELDS = [
+  "activations", "pre_activations", "loss", "prediction", "probability",
+  "grad_z", "grad_a_hidden", "features_raw", "features_norm", "true_label", "sample_idx",
+];
+
+function batchSizeOf(d) {
+  return d && d.batch ? d.batch.size : 1;
+}
+
+function clampBatch(v) {
+  const max = st.nSamples || 1;
+  return Math.max(1, Math.min(max, parseInt(v) || 1));
+}
+
+function wireBatchControls() {
+  const inp = document.getElementById("in-batch");
+  inp.addEventListener("change", () => {
+    st.batchSize = clampBatch(inp.value);
+    inp.value = st.batchSize;
+  });
+  document.getElementById("btn-full-batch").addEventListener("click", () => {
+    st.batchSize = clampBatch(st.nSamples);
+    inp.value = st.batchSize;
+  });
+}
+
+// Called from apiInit: sync the batch input to the dataset size and hide the panel.
+function resetBatchUI() {
+  const inp = document.getElementById("in-batch");
+  inp.max = st.nSamples || 32;
+  st.batchSize = clampBatch(st.batchSize);
+  inp.value = st.batchSize;
+  st.focus = 0;
+  document.getElementById("batch-panel").classList.add("hidden");
+}
+
+// Show batch.samples[k] in the network / info panel and re-render the current step.
+function setFocusSample(k) {
+  const d = st.data;
+  if (!d || !d.batch || k < 0 || k >= d.batch.samples.length) return;
+  const s = d.batch.samples[k];
+  SAMPLE_FIELDS.forEach(f => { d[f] = s[f]; });
+  d.sample_grad_w = s.grad_w;
+  d.sample_grad_b = s.grad_b;
+  st.focus = k;
+  goStep(st.step);
+}
+
+function renderBatchPanel(step, d) {
+  const panel = document.getElementById("batch-panel");
+  const B = batchSizeOf(d);
+  if (B <= 1) { panel.classList.add("hidden"); panel.innerHTML = ""; return; }
+  panel.classList.remove("hidden");
+
+  const b   = d.batch;
+  const ud  = step.type === "update" && step.updated ? step.updateData : null;
+  const cur = b.samples[st.focus];
+  const avgNote =
+    `Gradients are <strong>batch-averaged</strong>: ∂L/∂W = (1/B) Σᵢ ∂Lᵢ/∂W, with B = ${B}.`;
+
+  let html = `<div class="batch-head">
+      <span>Mini-batch · B = ${B}</span>
+      <span>focus: <strong>#${cur.sample_idx + 1}</strong> (${st.focus + 1}/${B}) · mean loss
+        <strong class="vhl">${b.mean_loss.toFixed(4)}</strong></span>
+    </div>`;
+
+  if (step.phase === "backward") {
+    html += `<p class="batch-note">The values above are for the focus sample only (per-sample ∂Lᵢ).
+      ${avgNote} The update applies the average, not the focus sample's gradient.</p>`;
+  } else if (step.phase === "update") {
+    html += `<p class="batch-note">${avgNote} Edge colors show Δw = −α · (1/B) Σᵢ ∂Lᵢ/∂W.
+      ${ud ? "Loss before/after above is the mean over the batch." : ""}</p>`;
+  } else if (step.phase === "loss") {
+    html += `<p class="batch-note">Batch loss L = (1/B) Σᵢ Lᵢ = <strong>${b.mean_loss.toFixed(4)}</strong>.
+      The panel above shows Lᵢ for the focus sample.</p>`;
+  }
+
+  if (step.phase === "loss" || step.phase === "update") {
+    // Full table: one row per sample, click a row to change focus
+    const rows = b.samples.map((s, k) => {
+      const lbl = b.true_labels[k], p = b.probabilities[k], pred = b.predictions[k];
+      const after = ud && ud.batch_losses_after ? ud.batch_losses_after[k] : null;
+      return `<tr class="batch-row${k === st.focus ? " batch-focus" : ""}" data-k="${k}">
+        <td>#${s.sample_idx + 1}</td>
+        <td class="${lbl ? "batch-dog" : "batch-cat"}">${CLS[lbl]}</td>
+        <td class="${pred === lbl ? "vp" : "vn"}">${p.toFixed(3)}</td>
+        <td>${b.losses[k].toFixed(4)}</td>
+        ${after !== null ? `<td class="${after < b.losses[k] ? "vp" : "vn"}">${after.toFixed(4)}</td>` : ""}
+      </tr>`;
+    }).join("");
+    html += `<div class="batch-table-wrap"><table class="batch-table">
+        <tr><th>Sample</th><th>True</th><th>ŷ</th><th>${ud ? "Lᵢ before" : "Lᵢ"}</th>${ud ? "<th>Lᵢ after</th>" : ""}</tr>
+        ${rows}
+        <tr class="batch-mean"><td colspan="3">Mean (1/B) Σ Lᵢ</td>
+          <td>${b.mean_loss.toFixed(4)}</td>${ud ? `<td>${ud.loss_after.toFixed(4)}</td>` : ""}</tr>
+      </table></div>`;
+  } else {
+    // Compact chip strip for the other steps
+    html += `<div class="batch-chips">${b.samples.map((s, k) =>
+      `<button class="batch-chip ${b.true_labels[k] ? "batch-dog" : "batch-cat"}${k === st.focus ? " batch-focus" : ""}"
+         data-k="${k}" title="Sample #${s.sample_idx + 1} · ${CLS[b.true_labels[k]]} · ŷ=${b.probabilities[k].toFixed(3)} · L=${b.losses[k].toFixed(4)}">#${s.sample_idx + 1}</button>`
+    ).join("")}</div>`;
+  }
+  html += `<div class="batch-hint">Click a sample to show it in the network.</div>`;
+
+  panel.innerHTML = html;
+  panel.querySelectorAll("[data-k]").forEach(el =>
+    el.addEventListener("click", () => setFocusSample(parseInt(el.dataset.k))));
 }

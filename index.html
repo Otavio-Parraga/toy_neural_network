@@ -37,8 +37,13 @@
       <input type="range" id="sl-lr" min="-3" max="0" step="0.25" value="-1" />
       <span class="slider-val" id="val-lr">0.1</span>
     </div>
-    <span class="ctrl-label" style="margin-top:6px">Sample</span>
+    <span class="ctrl-label" style="margin-top:6px">Sample <span class="dim">(first of batch)</span></span>
     <select id="sel-sample"></select>
+    <span class="ctrl-label" style="margin-top:6px">Batch size (B)</span>
+    <div class="batch-size-row">
+      <input type="number" id="in-batch" min="1" max="32" step="1" value="1" />
+      <button class="btn-sm" id="btn-full-batch">Full batch</button>
+    </div>
   </div>
 
   <div class="ctrl-group center">
@@ -77,6 +82,8 @@
       <p class="muted">Step through the forward and backward pass to see the math at each layer.</p>
     </div>
     <div id="formula-box" class="formula-box" style="display:none"></div>
+    <!-- Mini-batch summary (shown only when B > 1) -->
+    <div id="batch-panel" class="batch-panel hidden"></div>
     <!-- Update button shown only on the last step -->
     <button id="btn-update" class="btn-update hidden">Apply Weight Update (α = <span id="lr-show">0.1</span>)</button>
   </div>
@@ -87,7 +94,7 @@
 <div class="bottom-grid">
 
   <div class="card loss-card">
-    <div class="card-label">Loss over epochs</div>
+    <div class="card-label">Loss (batch mean) over updates</div>
     <canvas id="loss-chart"></canvas>
     <div id="loss-now" class="loss-now"></div>
   </div>

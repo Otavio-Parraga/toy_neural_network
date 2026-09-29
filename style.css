@@ -1,6 +1,29 @@
 /* ════ Reset ════════════════════════════════════════ */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ════ Mono subscripts ══════════════════════════════
+   Google Fonts' JetBrains Mono subsets (latin, greek, …) omit
+   sub/superscripts, arrows, math operators and box drawing, so
+   w₂₁, ← and ─ fell back to another font per glyph. Fill those
+   ranges from the full upstream webfont; unicode-range means it
+   only loads when such a glyph is on the page.
+   ═══════════════════════════════════════════════════ */
+@font-face {
+  font-family: "JetBrains Mono"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@v2.304/fonts/webfonts/JetBrainsMono-Regular.woff2") format("woff2");
+  unicode-range: U+2070-209F, U+2190-21FF, U+2200-22FF, U+2500-257F;
+}
+@font-face {
+  font-family: "JetBrains Mono"; font-style: normal; font-weight: 500; font-display: swap;
+  src: url("https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@v2.304/fonts/webfonts/JetBrainsMono-Medium.woff2") format("woff2");
+  unicode-range: U+2070-209F, U+2190-21FF, U+2200-22FF, U+2500-257F;
+}
+@font-face {
+  font-family: "JetBrains Mono"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@v2.304/fonts/webfonts/JetBrainsMono-Bold.woff2") format("woff2");
+  unicode-range: U+2070-209F, U+2190-21FF, U+2200-22FF, U+2500-257F;
+}
+
 /* ════ Theme tokens ═════════════════════════════════
    Light is the default (:root). Dark overrides live on
    [data-theme="dark"], which is set on <html> by the inline
@@ -66,7 +89,7 @@
   --radius-sm: 8px;
   --font-sans:  "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-serif: "Source Serif 4", "Lora", Georgia, "Times New Roman", serif;
-  --font-mono:  "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-mono:  "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
   --ease: cubic-bezier(.2, .7, .2, 1);
 }
 

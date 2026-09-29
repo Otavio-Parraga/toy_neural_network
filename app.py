@@ -1,11 +1,116 @@
-from flask import Flask, jsonify, request, send_from_directory
+from collections import OrderedDict
+from functools import wraps
+from flask import Flask, abort, g, jsonify, request, send_from_directory
+from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
+import json
+import math
 import numpy as np
 import os
+import re
+import secrets
+import threading
+import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_FILES = {"index.html", "app.js", "style.css"}
+
+# Limits mirrored from the UI (hidden layer inputs are 1..16, at most 5 layers).
+MIN_HIDDEN_SIZE, MAX_HIDDEN_SIZE = 1, 16
+MIN_HIDDEN_LAYERS, MAX_HIDDEN_LAYERS = 1, 5
+MAX_LR = 10.0
+
+
+def _finite_or_none(obj):
+    """Recursively replace NaN/Infinity floats with None (valid JSON null)."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _finite_or_none(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_finite_or_none(v) for v in obj]
+    return obj
+
+
+class StrictJSONProvider(DefaultJSONProvider):
+    """Never emit the non-standard NaN / Infinity tokens in responses."""
+
+    def dumps(self, obj, **kwargs):
+        kwargs.setdefault("default", self.default)
+        kwargs.setdefault("ensure_ascii", self.ensure_ascii)
+        kwargs.setdefault("sort_keys", self.sort_keys)
+        kwargs["allow_nan"] = False
+        try:
+            return json.dumps(obj, **kwargs)
+        except ValueError:
+            return json.dumps(_finite_or_none(obj), **kwargs)
+
+
 app = Flask(__name__, static_folder=BASE_DIR)
+app.json = StrictJSONProvider(app)
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024   # API bodies are tiny
 CORS(app)
+
+
+class BadRequest(ValueError):
+    """Invalid client input; turned into a 400 {"error": ...} response."""
+
+
+@app.errorhandler(BadRequest)
+def handle_bad_request(e):
+    return jsonify({"error": str(e)}), 400
+
+
+def json_body():
+    if not request.get_data(cache=True):
+        return {}
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        raise BadRequest("Request body must be valid JSON")
+    if not isinstance(data, dict):
+        raise BadRequest("Request body must be a JSON object")
+    return data
+
+
+def parse_int(value, name):
+    """Accept an int, an integral finite float, or a decimal integer string."""
+    if isinstance(value, bool):
+        raise BadRequest(f"{name} must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and len(value) <= 12:
+        try:
+            return int(value.strip())
+        except ValueError:
+            pass
+    raise BadRequest(f"{name} must be an integer")
+
+
+def parse_lr(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise BadRequest("lr must be a number")
+    try:
+        lr = float(value)
+    except (ValueError, OverflowError):
+        raise BadRequest("lr must be a number")
+    if not math.isfinite(lr) or not (0.0 < lr <= MAX_LR):
+        raise BadRequest(f"lr must be a finite number with 0 < lr <= {MAX_LR:g}")
+    return lr
+
+
+def parse_architecture(value):
+    """Validate a [4, h1, ..., hk, 1] list; input/output sizes are forced to 4/1."""
+    if not isinstance(value, list):
+        raise BadRequest("architecture must be a list of integers")
+    hidden = value[1:-1]
+    if len(hidden) < MIN_HIDDEN_LAYERS:
+        raise BadRequest(f"architecture needs at least {MIN_HIDDEN_LAYERS} hidden layer")
+    hidden = hidden[:MAX_HIDDEN_LAYERS]
+    sizes = [max(MIN_HIDDEN_SIZE, min(MAX_HIDDEN_SIZE, parse_int(h, "hidden layer size")))
+             for h in hidden]
+    return [4] + sizes + [1]
 
 # ── Synthetic cats vs dogs data ───────────────────────────────────────────────
 FEATURE_NAMES = ["Weight (kg)", "Ear Pointiness", "Meow/Bark Ratio", "Agility Score"]
@@ -37,19 +142,25 @@ def generate_data(n=100, seed=42):
 
 X_train, y_train, X_raw = generate_data()
 
-# ── Network state (server-side) ───────────────────────────────────────────────
-net = {
-    "architecture": [4, 4, 1],
-    "weights": [],
-    "biases": [],
-    "epoch": 0,
-    "loss_history": [],
+# ── Network state (server-side, one per visitor session) ─────────────────────
+DEFAULT_ARCHITECTURE = [4, 4, 1]
+
+
+def new_net(architecture=DEFAULT_ARCHITECTURE):
+    weights, biases = init_weights(architecture)
+    return {
+        "architecture": list(architecture),
+        "weights": weights,
+        "biases": biases,
+        "epoch": 0,
+        "loss_history": [],
     # Last forward/backward values for current sample
-    "grad_w": None,
-    "grad_b": None,
-    "last_loss": None,
-    "last_sample_idx": 0,
-}
+        "grad_w": None,
+        "grad_b": None,
+        "last_loss": None,            # mean loss over the last computed batch
+        "last_sample_idx": 0,         # focus (first) sample of the last batch
+        "last_batch_indices": [0],    # all sample indices of the last batch
+    }
 
 
 def relu(x):
@@ -61,11 +172,11 @@ def sigmoid(x):
 
 
 def init_weights(architecture, seed=42):
-    np.random.seed(seed)
+    rng = np.random.RandomState(seed)   # local RNG: safe across request threads
     weights, biases = [], []
     for i in range(len(architecture) - 1):
         fan_in, fan_out = architecture[i], architecture[i + 1]
-        W = np.random.randn(fan_out, fan_in) * np.sqrt(2.0 / fan_in)
+        W = rng.randn(fan_out, fan_in) * np.sqrt(2.0 / fan_in)
         b = np.zeros(fan_out)
         weights.append(W)
         biases.append(b)
@@ -126,8 +237,104 @@ def forward_backward(x, y_true, weights, biases):
     }
 
 
-# Initialize with defaults
-net["weights"], net["biases"] = init_weights(net["architecture"])
+def batch_indices(start, batch_size):
+    """Indices [start, start+1, ..., start+B-1] modulo n_samples, B clamped to [1, n]."""
+    n = len(X_train)
+    B = max(1, min(n, parse_int(batch_size, "batch_size")))
+    start = parse_int(start, "sample_idx") % n
+    return [(start + k) % n for k in range(B)]
+
+
+def run_batch(indices, weights, biases):
+    """forward_backward for every sample in the batch.
+
+    Returns (per-sample results, batch-averaged grad_w, batch-averaged grad_b, mean loss).
+    Averaged gradients: dL/dW = (1/B) * sum_i dL_i/dW  (L = mean BCE over the batch).
+    """
+    results = [forward_backward(X_train[i], float(y_train[i]), weights, biases)
+               for i in indices]
+    B = len(results)
+    n_w = len(weights)
+    avg_w = [np.mean([np.array(r["grad_w"][l]) for r in results], axis=0) for l in range(n_w)]
+    avg_b = [np.mean([np.array(r["grad_b"][l]) for r in results], axis=0) for l in range(n_w)]
+    mean_loss = float(sum(r["loss"] for r in results) / B)
+    return results, avg_w, avg_b, mean_loss
+
+
+# ── Per-visitor sessions ──────────────────────────────────────────────────────
+# Each browser gets a random id in an HttpOnly cookie that maps to its own
+# network in this in-process store, so visitors behind a public tunnel never
+# see or apply each other's gradients. The store lives in memory: run exactly
+# ONE server process (gunicorn --workers 1); threads are fine.
+SESSION_COOKIE = "tnn_session"
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
+MAX_SESSIONS = 500                 # least recently used sessions are evicted
+SESSION_IDLE_SECONDS = 6 * 3600    # sessions idle this long are dropped
+
+
+class Session:
+    __slots__ = ("net", "lock", "last_seen")
+
+    def __init__(self):
+        self.net = new_net()
+        self.lock = threading.Lock()   # serializes requests of one visitor
+        self.last_seen = time.monotonic()
+
+
+_sessions = OrderedDict()              # session id -> Session, LRU order
+_sessions_lock = threading.Lock()
+
+
+def _prune_sessions(now):
+    while _sessions:
+        sid, sess = next(iter(_sessions.items()))
+        if len(_sessions) > MAX_SESSIONS or now - sess.last_seen > SESSION_IDLE_SECONDS:
+            del _sessions[sid]
+        else:
+            break
+
+
+def current_session():
+    """Return this visitor's Session, creating it (and a new cookie) if needed."""
+    sid = request.cookies.get(SESSION_COOKIE, "")
+    now = time.monotonic()
+    with _sessions_lock:
+        sess = _sessions.get(sid) if SESSION_ID_RE.match(sid) else None
+        if sess is None:
+            # Unknown, expired or malformed id: always issue a fresh random one.
+            sid = secrets.token_urlsafe(32)
+            sess = _sessions[sid] = Session()
+        else:
+            _sessions.move_to_end(sid)
+        sess.last_seen = now
+        _prune_sessions(now)
+    g.session_id = sid   # (re)sent by set_session_cookie to slide its expiry
+    return sess
+
+
+@app.after_request
+def set_session_cookie(response):
+    sid = g.pop("session_id", None)
+    if sid is not None:
+        response.set_cookie(
+            SESSION_COOKIE, sid,
+            max_age=SESSION_IDLE_SECONDS,
+            httponly=True,
+            samesite="Lax",
+            secure=request.is_secure
+                   or request.headers.get("X-Forwarded-Proto", "") == "https",
+        )
+    return response
+
+
+def with_net(view):
+    """Pass the visitor's network to the view, holding that session's lock."""
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        sess = current_session()
+        with sess.lock:
+            return view(sess.net, *args, **kwargs)
+    return wrapper
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -136,16 +343,27 @@ def index():
     return send_from_directory(BASE_DIR, "index.html")
 
 
+@app.route("/healthz")
+def healthz():
+    # Fixed marker so tunnel.sh can tell this app apart from another
+    # service that happens to be listening on the same port.
+    return jsonify({"app": "toy-neural-network", "ok": True})
+
+
 @app.route("/<path:filename>")
 def static_files(filename):
+    # Only serve the frontend assets; never expose other project files
+    # (pyproject.toml, .venv, ...) — the app may be public via a tunnel.
+    if filename not in STATIC_FILES:
+        abort(404)
     return send_from_directory(BASE_DIR, filename)
 
 
 @app.route("/api/init", methods=["POST"])
-def api_init():
-    data = request.get_json() or {}
-    arch = data.get("architecture", [4, 4, 1])
-    arch = [4] + [max(1, int(h)) for h in arch[1:-1]] + [1]  # keep input=4, output=1
+@with_net
+def api_init(net):
+    data = json_body()
+    arch = parse_architecture(data.get("architecture", DEFAULT_ARCHITECTURE))
     net["architecture"] = arch
     net["weights"], net["biases"] = init_weights(arch)
     net["epoch"] = 0
@@ -162,27 +380,54 @@ def api_init():
 
 
 @app.route("/api/compute", methods=["POST"])
-def api_compute():
-    data = request.get_json() or {}
-    idx = int(data.get("sample_idx", 0)) % len(X_train)
-    x = X_train[idx]
-    y = float(y_train[idx])
+@with_net
+def api_compute(net):
+    data = json_body()
+    indices = batch_indices(data.get("sample_idx", 0), data.get("batch_size", 1))
+    idx = indices[0]                       # focus sample = first of the batch
 
-    result = forward_backward(x, y, net["weights"], net["biases"])
+    results, avg_w, avg_b, mean_loss = run_batch(indices, net["weights"], net["biases"])
+    result = results[0]
 
-    # Store gradients so /api/update can use them
-    net["grad_w"]         = result["grad_w"]
-    net["grad_b"]         = result["grad_b"]
-    net["last_loss"]      = result["loss"]
-    net["last_sample_idx"]= idx
+    # Store batch-averaged gradients so /api/update can apply them
+    net["grad_w"]             = [g.tolist() for g in avg_w]
+    net["grad_b"]             = [g.tolist() for g in avg_b]
+    net["last_loss"]          = mean_loss
+    net["last_sample_idx"]    = idx
+    net["last_batch_indices"] = indices
+
+    samples = [{
+        **r,
+        "features_raw":  X_raw[i].tolist(),
+        "features_norm": X_train[i].tolist(),
+        "true_label":    int(y_train[i]),
+        "sample_idx":    i,
+    } for i, r in zip(indices, results)]
 
     return jsonify({
         **result,
+        # grad_w / grad_b are the batch-AVERAGED gradients (what the update applies);
+        # the focus sample's own gradients are kept as sample_grad_w / sample_grad_b.
+        "grad_w":         net["grad_w"],
+        "grad_b":         net["grad_b"],
+        "sample_grad_w":  result["grad_w"],
+        "sample_grad_b":  result["grad_b"],
+        "mean_loss":      mean_loss,
+        "batch": {
+            "size":          len(indices),
+            "indices":       indices,
+            "true_labels":   [int(y_train[i]) for i in indices],
+            "probabilities": [r["probability"] for r in results],
+            "predictions":   [r["prediction"] for r in results],
+            "losses":        [r["loss"] for r in results],
+            "mean_loss":     mean_loss,
+            "samples":       samples,
+        },
         "architecture":   net["architecture"],
         "weights":        [w.tolist() for w in net["weights"]],
         "biases":         [b.tolist() for b in net["biases"]],
         "features_raw":   X_raw[idx].tolist(),
-        "features_norm":  x.tolist(),
+        "features_norm":  X_train[idx].tolist(),
         "true_label":     int(y_train[idx]),
         "sample_idx":     idx,
         "epoch":          net["epoch"],
@@ -192,31 +437,37 @@ def api_compute():
 
 
 @app.route("/api/update", methods=["POST"])
-def api_update():
+@with_net
+def api_update(net):
+    data = json_body()
+    lr   = parse_lr(data.get("lr", 0.1))
+
     if net["grad_w"] is None:
         return jsonify({"error": "Run compute first"}), 400
 
-    data = request.get_json() or {}
-    lr   = float(data.get("lr", 0.1))
-
     weights_old = [w.tolist() for w in net["weights"]]
     biases_old  = [b.tolist() for b in net["biases"]]
-    grad_w = [np.array(g) for g in net["grad_w"]]
+    grad_w = [np.array(g) for g in net["grad_w"]]   # batch-averaged
     grad_b = [np.array(g) for g in net["grad_b"]]
 
     deltas_w = [(-lr * dW).tolist() for dW in grad_w]
 
-    for i in range(len(net["weights"])):
-        net["weights"][i] -= lr * grad_w[i]
-        net["biases"][i]  -= lr * grad_b[i]
+    new_w = [W - lr * dW for W, dW in zip(net["weights"], grad_w)]
+    new_b = [b - lr * db for b, db in zip(net["biases"], grad_b)]
+    if not all(np.all(np.isfinite(a)) for a in new_w + new_b):
+        return jsonify({"error": "Update would make weights non-finite; "
+                                 "try a smaller learning rate"}), 400
+    net["weights"], net["biases"] = new_w, new_b
 
+    loss_before = net["last_loss"]
     net["epoch"] += 1
-    net["loss_history"].append(float(net["last_loss"]))
+    net["loss_history"].append(float(loss_before))   # mean batch loss
+    # These gradients are now spent: a repeated update needs a fresh compute.
+    net["grad_w"] = net["grad_b"] = net["last_loss"] = None
 
-    # Recompute loss on same sample with new weights to show improvement
-    idx = net["last_sample_idx"]
-    new_result = forward_backward(X_train[idx], float(y_train[idx]),
-                                  net["weights"], net["biases"])
+    # Recompute loss on the same batch with new weights to show improvement
+    indices = net["last_batch_indices"]
+    new_results, _, _, mean_after = run_batch(indices, net["weights"], net["biases"])
 
     return jsonify({
         "weights_old":  weights_old,
@@ -224,8 +475,9 @@ def api_update():
         "biases_old":   biases_old,
         "biases_new":   [b.tolist() for b in net["biases"]],
         "deltas_w":     deltas_w,
-        "loss_before":  net["last_loss"],
-        "loss_after":   new_result["loss"],
+        "loss_before":  loss_before,
+        "loss_after":   mean_after,
+        "batch_losses_after": [r["loss"] for r in new_results],
         "epoch":        net["epoch"],
         "loss_history": net["loss_history"],
     })

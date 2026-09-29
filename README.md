@@ -14,6 +14,7 @@ weights change step by step.
 - Hover over a connection to see its weight
 - Click a neuron to see its calculations
 - Light and dark mode
+- Each visitor trains their own network, so a whole class can share one server
 
 ## Quickstart
 
@@ -37,6 +38,16 @@ To get a temporary public URL without an account or any DNS setup:
 This starts the app with gunicorn on `127.0.0.1:$PORT` and runs
 `cloudflared tunnel --url http://localhost:$PORT`. cloudflared prints a
 `https://<random>.trycloudflare.com` URL. Press Ctrl+C to stop the tunnel and the server.
+If either process exits, the script stops the other one too.
+
+The script refuses to start if another process already listens on `$PORT`, so it can't
+publish some other local service by mistake. Pick a free port with `PORT=8090 ./tunnel.sh`.
+
+Everyone who opens the URL gets their own network. A random id in an HttpOnly cookie
+selects that visitor's architecture, weights, epoch count and loss history, so students
+never apply each other's gradients. The server keeps up to 500 sessions in memory,
+evicting the least recently used and dropping any that sit idle for 6 hours. Restarting
+the server resets all of them.
 
 You need [cloudflared](https://github.com/cloudflare/cloudflared/releases). The script
 prints install instructions if it can't find it (`brew install cloudflared` on macOS, or
@@ -47,8 +58,10 @@ the `.deb` or standalone binary from the releases page on Linux).
 The `Procfile` (`web: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1`) works on
 Render, Heroku and similar platforms. They install dependencies from `requirements.txt`.
 
-**Use exactly one worker.** The network state lives in an in-memory global in the
-server process, so multiple workers or instances would each hold their own model.
+**Use exactly one worker.** Each visitor's network lives in an in-memory store inside
+the server process. With several workers or instances, a visitor's requests could land on
+a process that doesn't hold their network. Requests take milliseconds, so one worker
+keeps up with a classroom.
 
 `requirements.txt` is generated from `uv.lock`. Regenerate it after changing dependencies:
 

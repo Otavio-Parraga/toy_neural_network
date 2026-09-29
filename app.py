@@ -1,10 +1,16 @@
-from flask import Flask, abort, jsonify, request, send_from_directory
+from collections import OrderedDict
+from functools import wraps
+from flask import Flask, abort, g, jsonify, request, send_from_directory
 from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 import json
 import math
 import numpy as np
 import os
+import re
+import secrets
+import threading
+import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_FILES = {"index.html", "app.js", "style.css"}
@@ -136,20 +142,25 @@ def generate_data(n=100, seed=42):
 
 X_train, y_train, X_raw = generate_data()
 
-# ── Network state (server-side) ───────────────────────────────────────────────
-net = {
-    "architecture": [4, 4, 1],
-    "weights": [],
-    "biases": [],
-    "epoch": 0,
-    "loss_history": [],
+# ── Network state (server-side, one per visitor session) ─────────────────────
+DEFAULT_ARCHITECTURE = [4, 4, 1]
+
+
+def new_net(architecture=DEFAULT_ARCHITECTURE):
+    weights, biases = init_weights(architecture)
+    return {
+        "architecture": list(architecture),
+        "weights": weights,
+        "biases": biases,
+        "epoch": 0,
+        "loss_history": [],
     # Last forward/backward values for current sample
-    "grad_w": None,
-    "grad_b": None,
-    "last_loss": None,            # mean loss over the last computed batch
-    "last_sample_idx": 0,         # focus (first) sample of the last batch
-    "last_batch_indices": [0],    # all sample indices of the last batch
-}
+        "grad_w": None,
+        "grad_b": None,
+        "last_loss": None,            # mean loss over the last computed batch
+        "last_sample_idx": 0,         # focus (first) sample of the last batch
+        "last_batch_indices": [0],    # all sample indices of the last batch
+    }
 
 
 def relu(x):
@@ -161,11 +172,11 @@ def sigmoid(x):
 
 
 def init_weights(architecture, seed=42):
-    np.random.seed(seed)
+    rng = np.random.RandomState(seed)   # local RNG: safe across request threads
     weights, biases = [], []
     for i in range(len(architecture) - 1):
         fan_in, fan_out = architecture[i], architecture[i + 1]
-        W = np.random.randn(fan_out, fan_in) * np.sqrt(2.0 / fan_in)
+        W = rng.randn(fan_out, fan_in) * np.sqrt(2.0 / fan_in)
         b = np.zeros(fan_out)
         weights.append(W)
         biases.append(b)
@@ -250,8 +261,80 @@ def run_batch(indices, weights, biases):
     return results, avg_w, avg_b, mean_loss
 
 
-# Initialize with defaults
-net["weights"], net["biases"] = init_weights(net["architecture"])
+# ── Per-visitor sessions ──────────────────────────────────────────────────────
+# Each browser gets a random id in an HttpOnly cookie that maps to its own
+# network in this in-process store, so visitors behind a public tunnel never
+# see or apply each other's gradients. The store lives in memory: run exactly
+# ONE server process (gunicorn --workers 1); threads are fine.
+SESSION_COOKIE = "tnn_session"
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
+MAX_SESSIONS = 500                 # least recently used sessions are evicted
+SESSION_IDLE_SECONDS = 6 * 3600    # sessions idle this long are dropped
+
+
+class Session:
+    __slots__ = ("net", "lock", "last_seen")
+
+    def __init__(self):
+        self.net = new_net()
+        self.lock = threading.Lock()   # serializes requests of one visitor
+        self.last_seen = time.monotonic()
+
+
+_sessions = OrderedDict()              # session id -> Session, LRU order
+_sessions_lock = threading.Lock()
+
+
+def _prune_sessions(now):
+    while _sessions:
+        sid, sess = next(iter(_sessions.items()))
+        if len(_sessions) > MAX_SESSIONS or now - sess.last_seen > SESSION_IDLE_SECONDS:
+            del _sessions[sid]
+        else:
+            break
+
+
+def current_session():
+    """Return this visitor's Session, creating it (and a new cookie) if needed."""
+    sid = request.cookies.get(SESSION_COOKIE, "")
+    now = time.monotonic()
+    with _sessions_lock:
+        sess = _sessions.get(sid) if SESSION_ID_RE.match(sid) else None
+        if sess is None:
+            # Unknown, expired or malformed id: always issue a fresh random one.
+            sid = secrets.token_urlsafe(32)
+            sess = _sessions[sid] = Session()
+        else:
+            _sessions.move_to_end(sid)
+        sess.last_seen = now
+        _prune_sessions(now)
+    g.session_id = sid   # (re)sent by set_session_cookie to slide its expiry
+    return sess
+
+
+@app.after_request
+def set_session_cookie(response):
+    sid = g.pop("session_id", None)
+    if sid is not None:
+        response.set_cookie(
+            SESSION_COOKIE, sid,
+            max_age=SESSION_IDLE_SECONDS,
+            httponly=True,
+            samesite="Lax",
+            secure=request.is_secure
+                   or request.headers.get("X-Forwarded-Proto", "") == "https",
+        )
+    return response
+
+
+def with_net(view):
+    """Pass the visitor's network to the view, holding that session's lock."""
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        sess = current_session()
+        with sess.lock:
+            return view(sess.net, *args, **kwargs)
+    return wrapper
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -270,9 +353,10 @@ def static_files(filename):
 
 
 @app.route("/api/init", methods=["POST"])
-def api_init():
+@with_net
+def api_init(net):
     data = json_body()
-    arch = parse_architecture(data.get("architecture", [4, 4, 1]))
+    arch = parse_architecture(data.get("architecture", DEFAULT_ARCHITECTURE))
     net["architecture"] = arch
     net["weights"], net["biases"] = init_weights(arch)
     net["epoch"] = 0
@@ -289,7 +373,8 @@ def api_init():
 
 
 @app.route("/api/compute", methods=["POST"])
-def api_compute():
+@with_net
+def api_compute(net):
     data = json_body()
     indices = batch_indices(data.get("sample_idx", 0), data.get("batch_size", 1))
     idx = indices[0]                       # focus sample = first of the batch
@@ -345,7 +430,8 @@ def api_compute():
 
 
 @app.route("/api/update", methods=["POST"])
-def api_update():
+@with_net
+def api_update(net):
     data = json_body()
     lr   = parse_lr(data.get("lr", 0.1))
 

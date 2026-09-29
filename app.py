@@ -1,12 +1,110 @@
 from flask import Flask, abort, jsonify, request, send_from_directory
+from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
+import json
+import math
 import numpy as np
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_FILES = {"index.html", "app.js", "style.css"}
+
+# Limits mirrored from the UI (hidden layer inputs are 1..16, at most 5 layers).
+MIN_HIDDEN_SIZE, MAX_HIDDEN_SIZE = 1, 16
+MIN_HIDDEN_LAYERS, MAX_HIDDEN_LAYERS = 1, 5
+MAX_LR = 10.0
+
+
+def _finite_or_none(obj):
+    """Recursively replace NaN/Infinity floats with None (valid JSON null)."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _finite_or_none(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_finite_or_none(v) for v in obj]
+    return obj
+
+
+class StrictJSONProvider(DefaultJSONProvider):
+    """Never emit the non-standard NaN / Infinity tokens in responses."""
+
+    def dumps(self, obj, **kwargs):
+        kwargs.setdefault("default", self.default)
+        kwargs.setdefault("ensure_ascii", self.ensure_ascii)
+        kwargs.setdefault("sort_keys", self.sort_keys)
+        kwargs["allow_nan"] = False
+        try:
+            return json.dumps(obj, **kwargs)
+        except ValueError:
+            return json.dumps(_finite_or_none(obj), **kwargs)
+
+
 app = Flask(__name__, static_folder=BASE_DIR)
+app.json = StrictJSONProvider(app)
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024   # API bodies are tiny
 CORS(app)
+
+
+class BadRequest(ValueError):
+    """Invalid client input; turned into a 400 {"error": ...} response."""
+
+
+@app.errorhandler(BadRequest)
+def handle_bad_request(e):
+    return jsonify({"error": str(e)}), 400
+
+
+def json_body():
+    if not request.get_data(cache=True):
+        return {}
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        raise BadRequest("Request body must be valid JSON")
+    if not isinstance(data, dict):
+        raise BadRequest("Request body must be a JSON object")
+    return data
+
+
+def parse_int(value, name):
+    """Accept an int, an integral finite float, or a decimal integer string."""
+    if isinstance(value, bool):
+        raise BadRequest(f"{name} must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and len(value) <= 12:
+        try:
+            return int(value.strip())
+        except ValueError:
+            pass
+    raise BadRequest(f"{name} must be an integer")
+
+
+def parse_lr(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise BadRequest("lr must be a number")
+    try:
+        lr = float(value)
+    except (ValueError, OverflowError):
+        raise BadRequest("lr must be a number")
+    if not math.isfinite(lr) or not (0.0 < lr <= MAX_LR):
+        raise BadRequest(f"lr must be a finite number with 0 < lr <= {MAX_LR:g}")
+    return lr
+
+
+def parse_architecture(value):
+    """Validate a [4, h1, ..., hk, 1] list; input/output sizes are forced to 4/1."""
+    if not isinstance(value, list):
+        raise BadRequest("architecture must be a list of integers")
+    hidden = value[1:-1]
+    if len(hidden) < MIN_HIDDEN_LAYERS:
+        raise BadRequest(f"architecture needs at least {MIN_HIDDEN_LAYERS} hidden layer")
+    hidden = hidden[:MAX_HIDDEN_LAYERS]
+    sizes = [max(MIN_HIDDEN_SIZE, min(MAX_HIDDEN_SIZE, parse_int(h, "hidden layer size")))
+             for h in hidden]
+    return [4] + sizes + [1]
 
 # ── Synthetic cats vs dogs data ───────────────────────────────────────────────
 FEATURE_NAMES = ["Weight (kg)", "Ear Pointiness", "Meow/Bark Ratio", "Agility Score"]
@@ -131,12 +229,8 @@ def forward_backward(x, y_true, weights, biases):
 def batch_indices(start, batch_size):
     """Indices [start, start+1, ..., start+B-1] modulo n_samples, B clamped to [1, n]."""
     n = len(X_train)
-    try:
-        B = int(batch_size)
-    except (TypeError, ValueError):
-        B = 1
-    B = max(1, min(n, B))
-    start = int(start) % n
+    B = max(1, min(n, parse_int(batch_size, "batch_size")))
+    start = parse_int(start, "sample_idx") % n
     return [(start + k) % n for k in range(B)]
 
 
@@ -177,9 +271,8 @@ def static_files(filename):
 
 @app.route("/api/init", methods=["POST"])
 def api_init():
-    data = request.get_json() or {}
-    arch = data.get("architecture", [4, 4, 1])
-    arch = [4] + [max(1, int(h)) for h in arch[1:-1]] + [1]  # keep input=4, output=1
+    data = json_body()
+    arch = parse_architecture(data.get("architecture", [4, 4, 1]))
     net["architecture"] = arch
     net["weights"], net["biases"] = init_weights(arch)
     net["epoch"] = 0
@@ -197,7 +290,7 @@ def api_init():
 
 @app.route("/api/compute", methods=["POST"])
 def api_compute():
-    data = request.get_json() or {}
+    data = json_body()
     indices = batch_indices(data.get("sample_idx", 0), data.get("batch_size", 1))
     idx = indices[0]                       # focus sample = first of the batch
 
@@ -253,11 +346,11 @@ def api_compute():
 
 @app.route("/api/update", methods=["POST"])
 def api_update():
+    data = json_body()
+    lr   = parse_lr(data.get("lr", 0.1))
+
     if net["grad_w"] is None:
         return jsonify({"error": "Run compute first"}), 400
-
-    data = request.get_json() or {}
-    lr   = float(data.get("lr", 0.1))
 
     weights_old = [w.tolist() for w in net["weights"]]
     biases_old  = [b.tolist() for b in net["biases"]]
@@ -266,12 +359,18 @@ def api_update():
 
     deltas_w = [(-lr * dW).tolist() for dW in grad_w]
 
-    for i in range(len(net["weights"])):
-        net["weights"][i] -= lr * grad_w[i]
-        net["biases"][i]  -= lr * grad_b[i]
+    new_w = [W - lr * dW for W, dW in zip(net["weights"], grad_w)]
+    new_b = [b - lr * db for b, db in zip(net["biases"], grad_b)]
+    if not all(np.all(np.isfinite(a)) for a in new_w + new_b):
+        return jsonify({"error": "Update would make weights non-finite; "
+                                 "try a smaller learning rate"}), 400
+    net["weights"], net["biases"] = new_w, new_b
 
+    loss_before = net["last_loss"]
     net["epoch"] += 1
-    net["loss_history"].append(float(net["last_loss"]))   # mean batch loss
+    net["loss_history"].append(float(loss_before))   # mean batch loss
+    # These gradients are now spent: a repeated update needs a fresh compute.
+    net["grad_w"] = net["grad_b"] = net["last_loss"] = None
 
     # Recompute loss on the same batch with new weights to show improvement
     indices = net["last_batch_indices"]
@@ -283,7 +382,7 @@ def api_update():
         "biases_old":   biases_old,
         "biases_new":   [b.tolist() for b in net["biases"]],
         "deltas_w":     deltas_w,
-        "loss_before":  net["last_loss"],
+        "loss_before":  loss_before,
         "loss_after":   mean_after,
         "batch_losses_after": [r["loss"] for r in new_results],
         "epoch":        net["epoch"],

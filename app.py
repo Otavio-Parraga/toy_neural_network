@@ -1,9 +1,10 @@
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, request, send_from_directory
 from flask_cors import CORS
 import numpy as np
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_FILES = {"index.html", "app.js", "style.css"}
 app = Flask(__name__, static_folder=BASE_DIR)
 CORS(app)
 
@@ -167,6 +168,10 @@ def index():
 
 @app.route("/<path:filename>")
 def static_files(filename):
+    # Only serve the frontend assets; never expose other project files
+    # (pyproject.toml, .venv, ...) — the app may be public via a tunnel.
+    if filename not in STATIC_FILES:
+        abort(404)
     return send_from_directory(BASE_DIR, filename)
 
 

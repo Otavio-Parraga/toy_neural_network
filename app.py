@@ -343,6 +343,13 @@ def index():
     return send_from_directory(BASE_DIR, "index.html")
 
 
+@app.route("/healthz")
+def healthz():
+    # Fixed marker so tunnel.sh can tell this app apart from another
+    # service that happens to be listening on the same port.
+    return jsonify({"app": "toy-neural-network", "ok": True})
+
+
 @app.route("/<path:filename>")
 def static_files(filename):
     # Only serve the frontend assets; never expose other project files

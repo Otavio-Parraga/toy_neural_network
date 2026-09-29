@@ -622,6 +622,16 @@ select option { background: var(--surface); color: var(--text); }
 
 .chart-wrap { position: relative; height: 180px; }
 .loss-card canvas { max-height: 180px; }
+.chart-wrap[hidden] { display: none; }
+.loss-empty[hidden] { display: none; }
+.loss-now:empty { display: none; }
+.loss-empty {
+  display: flex; align-items: center; justify-content: center; text-align: center;
+  min-height: 72px; padding: 14px 16px;
+  border: 1px dashed var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--sunken);
+  font-size: 13px; line-height: 1.45; color: var(--text-muted);
+}
 .loss-now { font: 500 12px var(--font-mono); color: var(--text-dim); margin-top: 10px; min-height: 1em; }
 
 .legend  { display: flex; flex-direction: column; gap: 10px; }
@@ -672,6 +682,8 @@ select option { background: var(--surface); color: var(--text); }
   .btn-compute { width: 100%; }
   .card { padding: 16px; }
   .net-card { min-height: 420px; }
+  .chart-wrap { height: 160px; }
+  .loss-card canvas { max-height: 160px; }
   .step-bar { border-radius: var(--radius); padding: 10px; gap: 8px; }
   .step-title { font-size: 16px; }
   .btn-nav { padding: 0 12px; }

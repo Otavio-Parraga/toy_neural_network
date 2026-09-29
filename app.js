@@ -1379,8 +1379,13 @@ function buildSampleSelect() {
    Loss chart
    ════════════════════════════════════════════════════════ */
 function renderLossChart() {
+  if (st.lossChart) { st.lossChart.destroy(); st.lossChart = null; }
+  // Before the first update show a compact empty state instead of a blank chart
+  const empty = !st.lossHistory.length;
+  document.getElementById("loss-empty").hidden = !empty;
+  document.getElementById("loss-wrap").hidden = empty;
+  if (empty) { document.getElementById("loss-now").textContent = ""; return; }
   const ctx = document.getElementById("loss-chart").getContext("2d");
-  if (st.lossChart) st.lossChart.destroy();
   const T = theme();
   st.lossChart = new Chart(ctx, {
     type: "line",

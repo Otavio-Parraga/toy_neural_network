@@ -137,7 +137,8 @@
 
   <div class="card loss-card">
     <div class="card-label">Loss (batch mean) over updates</div>
-    <div class="chart-wrap"><canvas id="loss-chart"></canvas></div>
+    <div id="loss-empty" class="loss-empty">No updates yet — apply a weight update to see the loss curve</div>
+    <div id="loss-wrap" class="chart-wrap" hidden><canvas id="loss-chart"></canvas></div>
     <div id="loss-now" class="loss-now"></div>
   </div>
 

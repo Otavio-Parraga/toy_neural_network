@@ -98,6 +98,17 @@
 
   <!-- Network SVG -->
   <div class="card net-card">
+    <div id="net-toolbar" class="net-toolbar hidden">
+      <p class="net-hint">
+        <span class="net-hint-item"><span class="hint-glyph hint-edge" aria-hidden="true"></span>Hover a connection to see its weight</span>
+        <span class="net-hint-item"><span class="hint-glyph hint-node" aria-hidden="true"></span>Click a neuron to see its calculation</span>
+      </p>
+      <label class="switch" title="Label connections with their weights (in larger layers, only those of the selected neuron)">
+        <input type="checkbox" id="chk-weights" role="switch" />
+        <span class="switch-track" aria-hidden="true"></span>
+        Show weights
+      </label>
+    </div>
     <div id="net-container"></div>
     <div id="net-placeholder" class="placeholder">
       <div>Click <strong>▶ Compute</strong> to start the training step visualization</div>
@@ -144,6 +155,9 @@
 </div>
 
 </main>
+
+<!-- Hover / tap tooltip for network edges and neurons -->
+<div id="net-tip" class="net-tip" role="tooltip" hidden></div>
 
 <script src="app.js"></script>
 </body>

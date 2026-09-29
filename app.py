@@ -47,8 +47,9 @@ net = {
     # Last forward/backward values for current sample
     "grad_w": None,
     "grad_b": None,
-    "last_loss": None,
-    "last_sample_idx": 0,
+    "last_loss": None,            # mean loss over the last computed batch
+    "last_sample_idx": 0,         # focus (first) sample of the last batch
+    "last_batch_indices": [0],    # all sample indices of the last batch
 }
 
 
@@ -126,6 +127,34 @@ def forward_backward(x, y_true, weights, biases):
     }
 
 
+def batch_indices(start, batch_size):
+    """Indices [start, start+1, ..., start+B-1] modulo n_samples, B clamped to [1, n]."""
+    n = len(X_train)
+    try:
+        B = int(batch_size)
+    except (TypeError, ValueError):
+        B = 1
+    B = max(1, min(n, B))
+    start = int(start) % n
+    return [(start + k) % n for k in range(B)]
+
+
+def run_batch(indices, weights, biases):
+    """forward_backward for every sample in the batch.
+
+    Returns (per-sample results, batch-averaged grad_w, batch-averaged grad_b, mean loss).
+    Averaged gradients: dL/dW = (1/B) * sum_i dL_i/dW  (L = mean BCE over the batch).
+    """
+    results = [forward_backward(X_train[i], float(y_train[i]), weights, biases)
+               for i in indices]
+    B = len(results)
+    n_w = len(weights)
+    avg_w = [np.mean([np.array(r["grad_w"][l]) for r in results], axis=0) for l in range(n_w)]
+    avg_b = [np.mean([np.array(r["grad_b"][l]) for r in results], axis=0) for l in range(n_w)]
+    mean_loss = float(sum(r["loss"] for r in results) / B)
+    return results, avg_w, avg_b, mean_loss
+
+
 # Initialize with defaults
 net["weights"], net["biases"] = init_weights(net["architecture"])
 
@@ -164,25 +193,51 @@ def api_init():
 @app.route("/api/compute", methods=["POST"])
 def api_compute():
     data = request.get_json() or {}
-    idx = int(data.get("sample_idx", 0)) % len(X_train)
-    x = X_train[idx]
-    y = float(y_train[idx])
+    indices = batch_indices(data.get("sample_idx", 0), data.get("batch_size", 1))
+    idx = indices[0]                       # focus sample = first of the batch
 
-    result = forward_backward(x, y, net["weights"], net["biases"])
+    results, avg_w, avg_b, mean_loss = run_batch(indices, net["weights"], net["biases"])
+    result = results[0]
 
-    # Store gradients so /api/update can use them
-    net["grad_w"]         = result["grad_w"]
-    net["grad_b"]         = result["grad_b"]
-    net["last_loss"]      = result["loss"]
-    net["last_sample_idx"]= idx
+    # Store batch-averaged gradients so /api/update can apply them
+    net["grad_w"]             = [g.tolist() for g in avg_w]
+    net["grad_b"]             = [g.tolist() for g in avg_b]
+    net["last_loss"]          = mean_loss
+    net["last_sample_idx"]    = idx
+    net["last_batch_indices"] = indices
+
+    samples = [{
+        **r,
+        "features_raw":  X_raw[i].tolist(),
+        "features_norm": X_train[i].tolist(),
+        "true_label":    int(y_train[i]),
+        "sample_idx":    i,
+    } for i, r in zip(indices, results)]
 
     return jsonify({
         **result,
+        # grad_w / grad_b are the batch-AVERAGED gradients (what the update applies);
+        # the focus sample's own gradients are kept as sample_grad_w / sample_grad_b.
+        "grad_w":         net["grad_w"],
+        "grad_b":         net["grad_b"],
+        "sample_grad_w":  result["grad_w"],
+        "sample_grad_b":  result["grad_b"],
+        "mean_loss":      mean_loss,
+        "batch": {
+            "size":          len(indices),
+            "indices":       indices,
+            "true_labels":   [int(y_train[i]) for i in indices],
+            "probabilities": [r["probability"] for r in results],
+            "predictions":   [r["prediction"] for r in results],
+            "losses":        [r["loss"] for r in results],
+            "mean_loss":     mean_loss,
+            "samples":       samples,
+        },
         "architecture":   net["architecture"],
         "weights":        [w.tolist() for w in net["weights"]],
         "biases":         [b.tolist() for b in net["biases"]],
         "features_raw":   X_raw[idx].tolist(),
-        "features_norm":  x.tolist(),
+        "features_norm":  X_train[idx].tolist(),
         "true_label":     int(y_train[idx]),
         "sample_idx":     idx,
         "epoch":          net["epoch"],
@@ -201,7 +256,7 @@ def api_update():
 
     weights_old = [w.tolist() for w in net["weights"]]
     biases_old  = [b.tolist() for b in net["biases"]]
-    grad_w = [np.array(g) for g in net["grad_w"]]
+    grad_w = [np.array(g) for g in net["grad_w"]]   # batch-averaged
     grad_b = [np.array(g) for g in net["grad_b"]]
 
     deltas_w = [(-lr * dW).tolist() for dW in grad_w]
@@ -211,12 +266,11 @@ def api_update():
         net["biases"][i]  -= lr * grad_b[i]
 
     net["epoch"] += 1
-    net["loss_history"].append(float(net["last_loss"]))
+    net["loss_history"].append(float(net["last_loss"]))   # mean batch loss
 
-    # Recompute loss on same sample with new weights to show improvement
-    idx = net["last_sample_idx"]
-    new_result = forward_backward(X_train[idx], float(y_train[idx]),
-                                  net["weights"], net["biases"])
+    # Recompute loss on the same batch with new weights to show improvement
+    indices = net["last_batch_indices"]
+    new_results, _, _, mean_after = run_batch(indices, net["weights"], net["biases"])
 
     return jsonify({
         "weights_old":  weights_old,
@@ -225,7 +279,8 @@ def api_update():
         "biases_new":   [b.tolist() for b in net["biases"]],
         "deltas_w":     deltas_w,
         "loss_before":  net["last_loss"],
-        "loss_after":   new_result["loss"],
+        "loss_after":   mean_after,
+        "batch_losses_after": [r["loss"] for r in new_results],
         "epoch":        net["epoch"],
         "loss_history": net["loss_history"],
     })

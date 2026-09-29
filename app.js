@@ -2,7 +2,7 @@
    Configuration
    ════════════════════════════════════════════════════════ */
 const API   = "";
-const R     = 20;          // neuron radius (px)
+const NODE_R = 20;         // neuron radius (px) at full width; drawNetwork shrinks it on narrow screens
 const MAX_N = 6;           // max neurons to draw per layer
 const FEAT  = ["Weight (kg)", "Ear Point.", "Meow/Bark", "Agility"];
 const FEAT_FULL = ["Weight (kg)", "Ear Pointiness", "Meow/Bark Ratio", "Agility Score"];
@@ -85,6 +85,7 @@ const st = {
   showWeights: false, // label edges with their weight values
   selNeuron: null,    // {layer, idx} clicked by the user; null → neuron 1 of the step's layer
   featStats: [],      // per-feature {mu, sd} of the raw data (for x̂ = (x − μ)/σ)
+  netWidth: 0,        // container width the network SVG was last drawn at
 };
 
 /* ════════════════════════════════════════════════════════
@@ -94,8 +95,26 @@ window.addEventListener("DOMContentLoaded", async () => {
   buildArchRow();
   wireControls();
   wireBatchControls();
+  watchNetResize();
   await apiInit();
 });
+
+// Redraw the network when its container changes width (window resize, rotation,
+// grid breakpoints). Debounced; height changes from our own redraw are ignored.
+function watchNetResize() {
+  const cont = document.getElementById("net-container");
+  let timer = null;
+  const onResize = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (!st.steps.length || !st.data) return;
+      if (cont.clientWidth === st.netWidth) return;
+      goStep(st.step);
+    }, 150);
+  };
+  if (window.ResizeObserver) new ResizeObserver(onResize).observe(cont);
+  else window.addEventListener("resize", onResize);
+}
 
 /* ════════════════════════════════════════════════════════
    Architecture row
@@ -358,11 +377,19 @@ function drawNetwork(step, d) {
   hideTip();
   cont.innerHTML = "";
 
-  const W  = Math.max(cont.clientWidth || 650, 400);
-  const H  = 420;
-  const ML = 100, MR = 60, MT = 44, MB = 24;
+  // Fit the container width; on narrow screens shrink neurons, labels and margins
+  const W  = cont.clientWidth || 650;
+  const compact = W < 560;
+  const R  = compact ? Math.round(NODE_R * Math.max(0.7, W / 560)) : NODE_R;
+  const FS = compact ? 9 : 10;               // feature / class label size
+  const VS = compact ? 8 : 9;                // in-node value + small label size
+  const H  = compact ? 380 : 420;
+  const ML = R + 6 + (compact ? 54 : 74);    // room for "Weight (kg)" left of the inputs
+  const MR = R + 8 + (compact ? 38 : 44);    // room for "Cat 🐱" / "p=0.000" right of the output
+  const MT = 44, MB = 24;
   const nL = arch.length;
   const T  = theme();
+  st.netWidth = W;
 
   const svg = d3.select("#net-container").append("svg")
     .attr("class", "net-svg").attr("width", W).attr("height", H);
@@ -618,7 +645,7 @@ function drawNetwork(step, d) {
       if (showVal != null) {
         g.append("text")
           .attr("text-anchor", "middle").attr("dy", "0.35em")
-          .attr("fill", inkOn(fill, T)).attr("font-size", "9px").attr("font-weight", "bold")
+          .attr("fill", inkOn(fill, T)).attr("font-size", `${VS}px`).attr("font-weight", "bold")
           .text(showVal);
       }
 
@@ -637,21 +664,21 @@ function drawNetwork(step, d) {
         svg.append("text")
           .attr("x", xs - R - 6).attr("y", y).attr("dy", "0.35em")
           .attr("text-anchor", "end")
-          .attr("fill", isHL ? T.text : T.textMuted).attr("font-size", "10px")
+          .attr("fill", isHL ? T.text : T.textMuted).attr("font-size", `${FS}px`)
           .text(FEAT[ni]);
       }
 
       // Output layer: class labels on the right
       if (l === nL - 1 && ni === 0) {
         svg.append("text").attr("x", xs + R + 8).attr("y", y - 8)
-          .attr("fill", T.cat).attr("font-size", "10px").attr("font-weight", "600")
+          .attr("fill", T.cat).attr("font-size", `${FS}px`).attr("font-weight", "600")
           .text("Cat 🐱");
         svg.append("text").attr("x", xs + R + 8).attr("y", y + 8)
-          .attr("fill", T.dog).attr("font-size", "10px").attr("font-weight", "600")
+          .attr("fill", T.dog).attr("font-size", `${FS}px`).attr("font-weight", "600")
           .text("Dog 🐶");
         if (act !== null) {
           svg.append("text").attr("x", xs + R + 8).attr("y", y + 24)
-            .attr("fill", T.textDim).attr("font-size", "9px")
+            .attr("fill", T.textDim).attr("font-size", `${VS}px`)
             .text(`p=${act.toFixed(3)}`);
         }
       }

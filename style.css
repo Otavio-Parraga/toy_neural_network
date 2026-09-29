@@ -883,3 +883,42 @@ select option { background: var(--surface); color: var(--text); }
 .info-body tr.sel-row { cursor: pointer; }
 .info-body tr.is-sel td { background: color-mix(in srgb, var(--accent) 9%, transparent); }
 .info-body tr.is-sel td:first-child { box-shadow: inset 2px 0 0 var(--accent); font-weight: 600; }
+
+/* ════ Language toggle (EN | PT) ═════════════════════
+   Segmented pill next to the theme toggle; same height, border,
+   surface and shadow as .theme-toggle / .epoch-badge. */
+.lang-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 36px;
+  padding: 3px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  font: 600 11px/1 var(--font-sans);
+  letter-spacing: .06em;
+  transition: color .15s, border-color .15s, background-color .25s, transform .2s var(--ease);
+}
+.lang-toggle:hover  { color: var(--text); border-color: var(--border-strong); }
+.lang-toggle:active { transform: scale(.96); }
+.lang-toggle span {
+  display: inline-grid;
+  place-items: center;
+  height: 100%;
+  min-width: 30px;
+  padding: 0 7px;
+  border-radius: 99px;
+  transition: background-color .2s var(--ease), color .2s var(--ease);
+}
+.lang-toggle[data-active="en"] span[data-lang="en"],
+.lang-toggle[data-active="pt"] span[data-lang="pt"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+@media (max-width: 640px) {
+  .header-actions .lang-toggle { margin-left: auto; }
+}

@@ -29,12 +29,15 @@
 <!-- ═══════════════ HEADER ═══════════════ -->
 <header class="site-header">
   <div class="brand">
-    <p class="eyebrow">Neural networks, one step at a time</p>
-    <h1>MLP Training <span class="dim">Forward &amp; Backward Pass</span></h1>
-    <p class="subtitle">Step through one complete training iteration, layer by layer.</p>
+    <p class="eyebrow" data-i18n="header.eyebrow">Neural networks, one step at a time</p>
+    <h1><span data-i18n="header.title">MLP Training</span> <span class="dim" data-i18n="header.titleDim">Forward &amp; Backward Pass</span></h1>
+    <p class="subtitle" data-i18n="header.subtitle">Step through one complete training iteration, layer by layer.</p>
   </div>
   <div class="header-actions">
     <span id="epoch-badge" class="epoch-badge">Epoch 0</span>
+    <button id="lang-toggle" class="lang-toggle" type="button" data-active="en" data-i18n-attr="aria-label:lang.label;title:lang.label" aria-label="Language: English. Mudar para português" title="Language: English. Mudar para português">
+      <span data-lang="en" aria-hidden="true">EN</span><span data-lang="pt" aria-hidden="true">PT</span>
+    </button>
     <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch to dark theme">
       <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
         <circle cx="12" cy="12" r="4.2" />
@@ -50,49 +53,49 @@
 <main class="page">
 
 <!-- ═══════════════ CONTROL BAR ═══════════════ -->
-<section class="ctrl-bar" aria-label="Network controls">
+<section class="ctrl-bar" aria-label="Network controls" data-i18n-attr="aria-label:ctrl.aria">
 
   <div class="ctrl-group">
-    <span class="ctrl-label">Hidden Layers</span>
+    <span class="ctrl-label" data-i18n="ctrl.hiddenLayers">Hidden Layers</span>
     <div id="arch-row" class="arch-row"></div>
     <div class="arch-btns">
-      <button class="btn-sm" id="btn-add">+ Layer</button>
-      <button class="btn-sm" id="btn-rm">− Layer</button>
-      <button class="btn-sm btn-reset" id="btn-init">↺ Reset weights</button>
+      <button class="btn-sm" id="btn-add" data-i18n="ctrl.addLayer">+ Layer</button>
+      <button class="btn-sm" id="btn-rm" data-i18n="ctrl.rmLayer">− Layer</button>
+      <button class="btn-sm btn-reset" id="btn-init" data-i18n="ctrl.reset">↺ Reset weights</button>
     </div>
   </div>
 
   <div class="ctrl-group">
-    <label class="ctrl-label" for="sl-lr">Learning Rate <span class="nocase">(α)</span></label>
+    <label class="ctrl-label" for="sl-lr"><span data-i18n="ctrl.lr">Learning Rate</span> <span class="nocase">(α)</span></label>
     <div class="slider-row">
       <input type="range" id="sl-lr" min="-3" max="0" step="0.25" value="-1" />
       <span class="slider-val" id="val-lr">0.1</span>
     </div>
-    <label class="ctrl-label ctrl-label-spaced" for="sel-sample">Sample <span class="dim">(first of batch)</span></label>
+    <label class="ctrl-label ctrl-label-spaced" for="sel-sample"><span data-i18n="ctrl.sample">Sample</span> <span class="dim" data-i18n="ctrl.sampleNote">(first of batch)</span></label>
     <select id="sel-sample"></select>
-    <label class="ctrl-label ctrl-label-spaced" for="in-batch">Batch size (B)</label>
+    <label class="ctrl-label ctrl-label-spaced" for="in-batch" data-i18n="ctrl.batchSize">Batch size (B)</label>
     <div class="batch-size-row">
       <input type="number" id="in-batch" min="1" max="32" step="1" value="1" />
-      <button class="btn-sm" id="btn-full-batch">Full batch</button>
+      <button class="btn-sm" id="btn-full-batch" data-i18n="ctrl.fullBatch">Full batch</button>
     </div>
   </div>
 
   <div class="ctrl-group center">
-    <button class="btn-compute" id="btn-compute">▶ Compute Forward + Backward</button>
-    <div id="compute-hint" class="compute-hint" aria-live="polite">Select a sample and click to begin</div>
+    <button class="btn-compute" id="btn-compute" data-i18n="ctrl.compute">▶ Compute Forward + Backward</button>
+    <div id="compute-hint" class="compute-hint" aria-live="polite" data-i18n="hint.start">Select a sample and click to begin</div>
   </div>
 
 </section>
 
 <!-- ═══════════════ STEP NAVIGATOR ═══════════════ -->
-<nav id="step-bar" class="step-bar hidden" aria-label="Training step navigator">
-  <button class="btn-nav" id="btn-prev">← Prev</button>
+<nav id="step-bar" class="step-bar hidden" aria-label="Training step navigator" data-i18n-attr="aria-label:nav.aria">
+  <button class="btn-nav" id="btn-prev" data-i18n="nav.prev">← Prev</button>
   <div class="step-info" aria-live="polite">
     <div id="phase-tag" class="phase-tag"></div>
     <div id="step-title" class="step-title"></div>
     <div id="step-counter" class="step-counter"></div>
   </div>
-  <button class="btn-nav" id="btn-next">Next →</button>
+  <button class="btn-nav" id="btn-next" data-i18n="nav.next">Next →</button>
 </nav>
 
 <!-- ═══════════════ MAIN AREA ═══════════════ -->
@@ -102,18 +105,18 @@
   <div class="card net-card">
     <div id="net-toolbar" class="net-toolbar hidden">
       <p class="net-hint">
-        <span class="net-hint-item"><span class="hint-glyph hint-edge" aria-hidden="true"></span>Hover a connection to see its weight</span>
-        <span class="net-hint-item"><span class="hint-glyph hint-node" aria-hidden="true"></span>Click a neuron to see its calculation</span>
+        <span class="net-hint-item"><span class="hint-glyph hint-edge" aria-hidden="true"></span><span data-i18n="net.hintEdge">Hover a connection to see its weight</span></span>
+        <span class="net-hint-item"><span class="hint-glyph hint-node" aria-hidden="true"></span><span data-i18n="net.hintNode">Click a neuron to see its calculation</span></span>
       </p>
-      <label class="switch" title="Label connections with their weights (in larger layers, only those of the selected neuron)">
+      <label class="switch" data-i18n-attr="title:net.showWeightsTitle" title="Label connections with their weights (in larger layers, only those of the selected neuron)">
         <input type="checkbox" id="chk-weights" role="switch" />
         <span class="switch-track" aria-hidden="true"></span>
-        Show weights
+        <span data-i18n="net.showWeights">Show weights</span>
       </label>
     </div>
     <div id="net-container"></div>
     <div id="net-placeholder" class="placeholder">
-      <div>Click <strong>▶ Compute</strong> to start the training step visualization</div>
+      <div data-i18n-html="net.placeholder">Click <strong>▶ Compute</strong> to start the training step visualization</div>
     </div>
   </div>
 
@@ -121,13 +124,13 @@
   <div class="card info-card">
     <div id="info-title" class="info-title"></div>
     <div id="info-body" class="info-body">
-      <p class="muted">Step through the forward and backward pass to see the math at each layer.</p>
+      <p class="muted" data-i18n="info.initial">Step through the forward and backward pass to see the math at each layer.</p>
     </div>
     <div id="formula-box" class="formula-box" style="display:none"></div>
     <!-- Mini-batch summary (shown only when B > 1) -->
     <div id="batch-panel" class="batch-panel hidden"></div>
     <!-- Update button shown only on the last step -->
-    <button id="btn-update" class="btn-update hidden">Apply Weight Update (α = <span id="lr-show">0.1</span>)</button>
+    <button id="btn-update" class="btn-update hidden"><span data-i18n="update.apply">Apply Weight Update</span> (α = <span id="lr-show">0.1</span>)</button>
   </div>
 
 </div>
@@ -136,22 +139,22 @@
 <div class="bottom-grid">
 
   <div class="card loss-card">
-    <div class="card-label">Loss (batch mean) over updates</div>
-    <div id="loss-empty" class="loss-empty">No updates yet — apply a weight update to see the loss curve</div>
+    <div class="card-label" data-i18n="loss.card">Loss (batch mean) over updates</div>
+    <div id="loss-empty" class="loss-empty" data-i18n="loss.empty">No updates yet — apply a weight update to see the loss curve</div>
     <div id="loss-wrap" class="chart-wrap" hidden><canvas id="loss-chart"></canvas></div>
     <div id="loss-now" class="loss-now"></div>
   </div>
 
   <div class="card legend-card">
-    <div class="card-label">Legend</div>
+    <div class="card-label" data-i18n="legend.title">Legend</div>
     <div class="legend">
-      <div class="leg-row"><span class="dot dot-fwd"></span>Forward signal / activation</div>
-      <div class="leg-row"><span class="dot dot-bwd"></span>Backward gradient signal</div>
-      <div class="leg-row"><span class="dot dot-winc"></span>Weight update (Δw &gt; 0)</div>
-      <div class="leg-row"><span class="dot dot-wdec"></span>Weight update (Δw &lt; 0)</div>
-      <div class="leg-row"><span class="dot dot-hl"></span>Current layer (highlighted)</div>
-      <div class="leg-row"><span class="dot dot-cat"></span>Cat class</div>
-      <div class="leg-row"><span class="dot dot-dog"></span>Dog class</div>
+      <div class="leg-row"><span class="dot dot-fwd"></span><span data-i18n="legend.fwd">Forward signal / activation</span></div>
+      <div class="leg-row"><span class="dot dot-bwd"></span><span data-i18n="legend.bwd">Backward gradient signal</span></div>
+      <div class="leg-row"><span class="dot dot-winc"></span><span data-i18n="legend.winc">Weight update (Δw &gt; 0)</span></div>
+      <div class="leg-row"><span class="dot dot-wdec"></span><span data-i18n="legend.wdec">Weight update (Δw &lt; 0)</span></div>
+      <div class="leg-row"><span class="dot dot-hl"></span><span data-i18n="legend.hl">Current layer (highlighted)</span></div>
+      <div class="leg-row"><span class="dot dot-cat"></span><span data-i18n="legend.cat">Cat class</span></div>
+      <div class="leg-row"><span class="dot dot-dog"></span><span data-i18n="legend.dog">Dog class</span></div>
     </div>
   </div>
 
@@ -162,6 +165,7 @@
 <!-- Hover / tap tooltip for network edges and neurons -->
 <div id="net-tip" class="net-tip" role="tooltip" hidden></div>
 
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -13,7 +13,7 @@ import threading
 import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_FILES = {"index.html", "app.js", "style.css"}
+STATIC_FILES = {"index.html", "app.js", "i18n.js", "style.css"}
 
 # Limits mirrored from the UI (hidden layer inputs are 1..16, at most 5 layers).
 MIN_HIDDEN_SIZE, MAX_HIDDEN_SIZE = 1, 16

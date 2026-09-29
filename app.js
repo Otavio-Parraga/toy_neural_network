@@ -4,9 +4,8 @@
 const API   = "";
 const NODE_R = 20;         // neuron radius (px) at full width; drawNetwork shrinks it on narrow screens
 const MAX_N = 6;           // max neurons to draw per layer
-const FEAT  = ["Weight (kg)", "Ear Point.", "Meow/Bark", "Agility"];
-const FEAT_FULL = ["Weight (kg)", "Ear Pointiness", "Meow/Bark Ratio", "Agility Score"];
-const CLS   = ["Cat 🐱", "Dog 🐶"];
+const N_FEAT = 4;          // input features; localized names come from featName()/featShort() in i18n.js
+// Class names: clsName(i) / clsPlain(i) in i18n.js (0 = cat, 1 = dog)
 const CCOL  = ["#5d59a8", "#9a6130"];   // [cat, dog]; refreshed in place from --cat / --dog by syncThemeColors()
 
 /* ════════════════════════════════════════════════════════
@@ -80,6 +79,7 @@ const st = {
   step: 0,
   lossChart: null,
   lossHistory: [],
+  lossNow: null,      // last update's {before, after, batch} for the "loss-now" line
   batchSize: 1,       // mini-batch size B sent to /api/compute
   focus: 0,           // index into data.batch.samples shown in the network
   showWeights: false, // label edges with their weight values
@@ -92,6 +92,7 @@ const st = {
    Boot
    ════════════════════════════════════════════════════════ */
 window.addEventListener("DOMContentLoaded", async () => {
+  applyI18n();
   buildArchRow();
   wireControls();
   wireBatchControls();
@@ -133,7 +134,7 @@ function buildArchRow() {
   const editable = (v, i) => {
     const w = document.createElement("div");
     w.className = "layer-wrap";
-    w.innerHTML = `<span class="lbl">Hidden ${i+1}</span><input type="number" min="1" max="16" value="${v}" data-i="${i}">`;
+    w.innerHTML = `<span class="lbl">${esc(t("layer.hidden", { n: i + 1 }))}</span><input type="number" min="1" max="16" value="${v}" data-i="${i}">`;
     w.querySelector("input").addEventListener("change", e => {
       st.hiddenLayers[i] = Math.max(1, Math.min(16, parseInt(e.target.value) || 1));
       e.target.value = st.hiddenLayers[i];
@@ -141,10 +142,10 @@ function buildArchRow() {
     return w;
   };
 
-  row.appendChild(fixed(4, "Input"));
+  row.appendChild(fixed(4, esc(t("layer.input"))));
   st.hiddenLayers.forEach((n, i) => { row.appendChild(sep()); row.appendChild(editable(n, i)); });
   row.appendChild(sep());
-  row.appendChild(fixed(1, "Output"));
+  row.appendChild(fixed(1, esc(t("layer.output"))));
 }
 
 /* ════════════════════════════════════════════════════════
@@ -206,8 +207,7 @@ async function apiInit() {
     if (!res.ok) throw new Error(res.status);
     d = await res.json();
   } catch (e) {
-    document.getElementById("net-placeholder").innerHTML =
-      `<div>⚠ Cannot reach server.<br>Start it on the server with <code>./start.sh --detach</code> and open the trycloudflare.com URL it prints.</div>`;
+    document.getElementById("net-placeholder").innerHTML = `<div data-i18n-html="err.server">${t("err.server")}</div>`;
     return;
   }
 
@@ -217,6 +217,7 @@ async function apiInit() {
   st.featStats = computeFeatStats(d.X_raw);
   st.selNeuron = null;
   st.lossHistory = [];
+  st.lossNow = null;
   st.data = null;
   st.steps = [];
 
@@ -228,7 +229,7 @@ async function apiInit() {
   document.getElementById("net-toolbar").classList.add("hidden");
   hideTip();
   document.getElementById("net-container").innerHTML = "";
-  document.getElementById("info-body").innerHTML = '<p class="muted">Architecture reset. Click ▶ Compute to run a training step.</p>';
+  document.getElementById("info-body").innerHTML = `<p class="muted" data-i18n="info.reset">${esc(t("info.reset"))}</p>`;
   document.getElementById("formula-box").style.display = "none";
   document.getElementById("btn-update").classList.add("hidden");
   renderLossChart();
@@ -239,7 +240,7 @@ async function apiInit() {
    ════════════════════════════════════════════════════════ */
 async function apiCompute() {
   document.getElementById("btn-compute").disabled = true;
-  document.getElementById("compute-hint").textContent = "Computing…";
+  setI18n("compute-hint", "hint.computing");
   try {
     const res = await fetch(`${API}/api/compute`, {
       method: "POST", headers: {"Content-Type": "application/json"},
@@ -253,13 +254,11 @@ async function apiCompute() {
     document.getElementById("net-placeholder").style.display = "none";
     document.getElementById("net-toolbar").classList.remove("hidden");
     document.getElementById("step-bar").classList.remove("hidden");
-    document.getElementById("compute-hint").textContent =
-      batchSizeOf(st.data) > 1
-        ? `Batch of ${batchSizeOf(st.data)} computed (starting at sample ${st.sample + 1}). Step through the passes.`
-        : `Sample ${st.sample + 1} computed. Step through the passes.`;
+    if (batchSizeOf(st.data) > 1) setI18n("compute-hint", "hint.batchDone", { B: batchSizeOf(st.data), s: st.sample + 1 });
+    else setI18n("compute-hint", "hint.sampleDone", { s: st.sample + 1 });
     goStep(0);
   } catch(e) {
-    document.getElementById("compute-hint").textContent = "Error: " + e.message;
+    setI18n("compute-hint", "hint.error", { msg: trError(e.message) });
   } finally {
     document.getElementById("btn-compute").disabled = false;
   }
@@ -282,7 +281,7 @@ async function apiUpdate() {
     d = await res.json();
     if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
   } catch (e) {
-    document.getElementById("compute-hint").textContent = `Update failed: ${e.message}`;
+    setI18n("compute-hint", "hint.updateFailed", { msg: trError(e.message) });
     return;
   } finally {
     btn.disabled = false;
@@ -291,11 +290,8 @@ async function apiUpdate() {
   updateEpoch(d.epoch);
   renderLossChart();
 
-  const pct = ((d.loss_before - d.loss_after) / d.loss_before * 100).toFixed(1);
-  const improved = d.loss_after < d.loss_before;
-
-  document.getElementById("loss-now").textContent =
-    `${batchSizeOf(st.data) > 1 ? "Mean batch loss" : "Loss"}: ${d.loss_before.toFixed(4)} → ${d.loss_after.toFixed(4)}  (${improved ? "▼ −" : "▲ +"}${Math.abs(pct)}%)`;
+  st.lossNow = { before: d.loss_before, after: d.loss_after, batch: batchSizeOf(st.data) > 1 };
+  renderLossNow();
 
   // Update the last step info to show the weight deltas
   const last = st.steps[st.steps.length - 1];
@@ -305,8 +301,7 @@ async function apiUpdate() {
   goStep(st.steps.length - 1);
 
   document.getElementById("btn-update").classList.add("hidden");
-  document.getElementById("compute-hint").textContent =
-    "Weights updated! Run ▶ Compute again to see the next iteration.";
+  setI18n("compute-hint", "hint.updated");
 }
 
 /* ════════════════════════════════════════════════════════
@@ -355,17 +350,17 @@ function goStep(n) {
   // Step bar UI
   document.getElementById("btn-prev").disabled = n === 0;
   document.getElementById("btn-next").disabled = n === total - 1;
-  document.getElementById("step-counter").textContent = `Step ${n + 1} / ${total}`;
+  document.getElementById("step-counter").textContent = t("nav.counter", { n: n + 1, total });
 
   const tag = document.getElementById("phase-tag");
   const titles = {
-    input:      ["FORWARD",  "phase-forward",  "Input Layer"],
-    fwd_hidden: ["FORWARD",  "phase-forward",  `Hidden Layer ${step.layer}`],
-    fwd_output: ["FORWARD",  "phase-forward",  "Output Layer"],
-    loss:       ["LOSS",     "phase-loss",     "Loss Computation"],
-    bwd_output: ["BACKWARD", "phase-backward", "Output Gradients"],
-    bwd_hidden: ["BACKWARD", "phase-backward", `Hidden Layer ${step.layer} Gradients`],
-    update:     ["UPDATE",   "phase-update",   "Weight Update"],
+    input:      [t("phase.forward"),  "phase-forward",  t("step.input")],
+    fwd_hidden: [t("phase.forward"),  "phase-forward",  t("step.fwdHidden", { l: step.layer })],
+    fwd_output: [t("phase.forward"),  "phase-forward",  t("step.fwdOutput")],
+    loss:       [t("phase.loss"),     "phase-loss",     t("step.loss")],
+    bwd_output: [t("phase.backward"), "phase-backward", t("step.bwdOutput")],
+    bwd_hidden: [t("phase.backward"), "phase-backward", t("step.bwdHidden", { l: step.layer })],
+    update:     [t("phase.update"),   "phase-update",   t("step.update")],
   };
   const [phase, cls, title] = titles[step.type];
   tag.textContent  = phase;
@@ -398,8 +393,11 @@ function drawNetwork(step, d) {
   const FS = compact ? 9 : 10;               // feature / class label size
   const VS = compact ? 8 : 9;                // in-node value + small label size
   const H  = compact ? 380 : 420;
-  const ML = R + 6 + (compact ? 54 : 74);    // room for "Weight (kg)" left of the inputs
-  const MR = R + 8 + (compact ? 38 : 44);    // room for "Cat 🐱" / "p=0.000" right of the output
+  // Side margins fit the (localized) feature names left of the inputs and the class
+  // labels / "p=0.000" right of the output (~0.62em per char; an emoji counts as 2).
+  const labelW = strs => Math.ceil(Math.max(...strs.map(s => s.length)) * FS * 0.62);
+  const ML = R + 6 + Math.max(compact ? 54 : 74, labelW(Array.from({ length: N_FEAT }, (_, i) => featShort(i))));
+  const MR = R + 8 + Math.max(compact ? 38 : 44, labelW([clsName(0), clsName(1)]));
   const MT = 44, MB = 24;
   const nL = arch.length;
   const T  = theme();
@@ -597,7 +595,7 @@ function drawNetwork(step, d) {
         .attr("x", xs).attr("y", H - MB + 14)
         .attr("text-anchor", "middle")
         .attr("fill", T.textMuted).attr("font-size", "9px")
-        .text(`+ ${nN - MAX_N} more`);
+        .text(t("net.more", { n: nN - MAX_N }));
     }
 
     ys.forEach((y, ni) => {
@@ -608,7 +606,7 @@ function drawNetwork(step, d) {
         .attr("data-l", l).attr("data-i", ni)
         .attr("tabindex", 0).attr("role", "button")
         .attr("aria-pressed", isSel && eff.user ? "true" : "false")
-        .attr("aria-label", `${neuronName(l, ni, nL)}: show its calculation`)
+        .attr("aria-label", t("net.neuronAria", { name: neuronName(l, ni, nL) }))
         .attr("transform", `translate(${xs},${y})`);
 
       // Determine fill / stroke based on phase + layer
@@ -674,22 +672,22 @@ function drawNetwork(step, d) {
        .on("blur", () => hideTip());
 
       // Input layer: feature names on the left
-      if (l === 0 && FEAT[ni]) {
+      if (l === 0 && ni < N_FEAT) {
         svg.append("text")
           .attr("x", xs - R - 6).attr("y", y).attr("dy", "0.35em")
           .attr("text-anchor", "end")
           .attr("fill", isHL ? T.text : T.textMuted).attr("font-size", `${FS}px`)
-          .text(FEAT[ni]);
+          .text(featShort(ni));
       }
 
       // Output layer: class labels on the right
       if (l === nL - 1 && ni === 0) {
         svg.append("text").attr("x", xs + R + 8).attr("y", y - 8)
           .attr("fill", T.cat).attr("font-size", `${FS}px`).attr("font-weight", "600")
-          .text("Cat 🐱");
+          .text(clsName(0));
         svg.append("text").attr("x", xs + R + 8).attr("y", y + 8)
           .attr("fill", T.dog).attr("font-size", `${FS}px`).attr("font-weight", "600")
-          .text("Dog 🐶");
+          .text(clsName(1));
         if (act !== null) {
           svg.append("text").attr("x", xs + R + 8).attr("y", y + 24)
             .attr("fill", T.textDim).attr("font-size", `${VS}px`)
@@ -780,12 +778,12 @@ const sub = n => String(n).split("").map(c => SUBS[+c] || c).join("");
 const sub2 = (j, i) => (j < 10 && i < 10) ? sub(j) + sub(i) : `${sub(j)},${sub(i)}`;
 
 function layerName(l, nL) {
-  return l === 0 ? "Input" : (l === nL - 1 ? "Output" : `Hidden ${l}`);
+  return l === 0 ? t("layer.input") : (l === nL - 1 ? t("layer.output") : t("layer.hidden", { n: l }));
 }
 // Short name for a neuron, e.g. "Hidden 1 · n2" or the feature name for inputs.
 function neuronName(l, i, nL) {
-  if (l === 0) return FEAT_FULL[i] || `Input · x${i + 1}`;
-  if (l === nL - 1) return "Output · ŷ";
+  if (l === 0) return i < N_FEAT ? featName(i) : t("neuron.input", { i: i + 1 });
+  if (l === nL - 1) return t("neuron.output");
   return `${layerName(l, nL)} · n${i + 1}`;
 }
 
@@ -826,40 +824,40 @@ function edgeTipHTML(step, d, l, j, i) {
   if (step.phase === "forward" || step.phase === "loss") {
     if (fwdComputed(step, l)) {
       const a = d.activations[l][i];
-      rows += tipRow(`${src} <span class="tip-dim">(source)</span>`, fmtNum(a), signCls(a));
+      rows += tipRow(`${src} <span class="tip-dim">${t("tip.source")}</span>`, fmtNum(a), signCls(a));
       rows += tipSep();
       rows += tipRow(`w · ${src}`, fmtNum(w * a), `${signCls(w * a)} tip-strong`);
-      rows += `<div class="tip-note">This connection's contribution to z${sub(j + 1)} of ${esc(neuronName(l + 1, j, nL))}.</div>`;
+      rows += `<div class="tip-note">${esc(t("tip.contrib", { j: sub(j + 1), name: neuronName(l + 1, j, nL) }))}</div>`;
     } else {
-      rows += `<div class="tip-note">Source activation not computed yet — step forward to see w · a.</div>`;
+      rows += `<div class="tip-note">${esc(t("tip.srcPending"))}</div>`;
     }
   } else if (step.phase === "backward") {
     if (gradComputed(step, l + 1)) {
       const dz = d.grad_z[l][j], a = d.activations[l][i];
-      rows += tipRow(`δ${sub(j + 1)} <span class="tip-dim">(target)</span>`, fmtNum(dz), signCls(dz));
-      rows += tipRow(`${src} <span class="tip-dim">(source)</span>`, fmtNum(a), signCls(a));
+      rows += tipRow(`δ${sub(j + 1)} <span class="tip-dim">${t("tip.target")}</span>`, fmtNum(dz), signCls(dz));
+      rows += tipRow(`${src} <span class="tip-dim">${t("tip.source")}</span>`, fmtNum(a), signCls(a));
       rows += tipSep();
       rows += tipRow(`∂L/∂w = δ · ${src}`, fmtNum(dz * a), `${signCls(dz * a)} tip-strong`);
       if (B > 1) {
         const gAvg = d.grad_w[l][j][i];
-        rows += tipRow(`batch avg ∂L/∂w`, fmtNum(gAvg), signCls(gAvg));
-        rows += `<div class="tip-note">δ · a is for the focus sample; the update uses the mean over B = ${B}.</div>`;
+        rows += tipRow(esc(t("tip.batchAvg")), fmtNum(gAvg), signCls(gAvg));
+        rows += `<div class="tip-note">${esc(t("tip.focusNote", { B }))}</div>`;
       }
     } else {
-      rows += `<div class="tip-note">Gradient not computed yet — backprop reaches this layer in a later step.</div>`;
+      rows += `<div class="tip-note">${esc(t("tip.gradPending"))}</div>`;
     }
   } else if (step.phase === "update") {
     const u = updateVals(step, d, l, j, i);
-    rows = tipRow("old w", fmtNum(u.old), signCls(u.old));
-    rows += tipRow(`∂L/∂w${B > 1 ? " (avg)" : ""}`, fmtNum(u.g), signCls(u.g));
+    rows = tipRow(esc(t("tip.oldW")), fmtNum(u.old), signCls(u.old));
+    rows += tipRow(`∂L/∂w${B > 1 ? esc(t("tip.avg")) : ""}`, fmtNum(u.g), signCls(u.g));
     rows += tipRow(`Δw = −α·∂L/∂w`, fmtNum(u.delta, 5), signCls(u.delta));
     rows += tipSep();
-    rows += tipRow("new w", fmtNum(u.nw), `${signCls(u.nw)} tip-strong`);
-    rows += `<div class="tip-note">${u.applied ? "Applied" : "Preview"} with α = ${fmtLR(u.lr)}.</div>`;
+    rows += tipRow(esc(t("tip.newW")), fmtNum(u.nw), `${signCls(u.nw)} tip-strong`);
+    rows += `<div class="tip-note">${esc(t(u.applied ? "tip.applied" : "tip.preview", { lr: fmtLR(u.lr) }))}</div>`;
   }
 
   return `<div class="tip-title">${esc(neuronName(l, i, nL))} → ${esc(neuronName(l + 1, j, nL))}</div>
-    <div class="tip-sub">Weight · ${esc(layerName(l, nL))} → ${esc(layerName(l + 1, nL))} layer</div>
+    <div class="tip-sub">${esc(t("tip.weightSub", { from: layerName(l, nL), to: layerName(l + 1, nL) }))}</div>
     <dl class="tip-grid">${rows}</dl>`;
 }
 
@@ -868,18 +866,18 @@ function neuronTipHTML(step, d, l, j) {
   const out = l === nL - 1;
   let rows = "";
   if (l === 0) {
-    rows += tipRow("raw x", fmtNum(d.features_raw[j], 3));
+    rows += tipRow(esc(t("tip.rawX")), fmtNum(d.features_raw[j], 3));
     rows += tipRow("x̂ = (x − μ)/σ", fmtNum(d.features_norm[j]), `${signCls(d.features_norm[j])} tip-strong`);
   } else {
     const b = d.biases[l - 1][j];
-    rows += tipRow(`bias b${sub(j + 1)}`, fmtNum(b), signCls(b));
+    rows += tipRow(esc(t("tip.bias", { j: sub(j + 1) })), fmtNum(b), signCls(b));
     if (fwdComputed(step, l)) {
       const z = d.pre_activations[l - 1][j], a = d.activations[l][j];
       rows += tipRow(`z${sub(j + 1)}`, fmtNum(z), signCls(z));
       rows += tipRow(out ? "ŷ = σ(z)" : "a = ReLU(z)", fmtNum(a), `${out ? "vhl" : signCls(a)} tip-strong`);
-      if (out) rows += tipRow("true y", `${d.true_label} (${CLS[d.true_label]})`);
+      if (out) rows += tipRow(esc(t("tip.trueY")), `${d.true_label} (${esc(clsName(d.true_label))})`);
     } else {
-      rows += `<div class="tip-note">z and a are computed in a later forward step.</div>`;
+      rows += `<div class="tip-note">${esc(t("tip.zaPending"))}</div>`;
     }
     if (gradComputed(step, l)) {
       const dz = d.grad_z[l - 1][j];
@@ -893,11 +891,11 @@ function neuronTipHTML(step, d, l, j) {
     if (step.phase === "update") {
       const u = updateVals(step, d, l - 1, j, null);
       rows += tipSep();
-      rows += tipRow("bias old → new", `${fmtNum(u.old)} → ${fmtNum(u.nw)}`, signCls(u.nw));
+      rows += tipRow(esc(t("tip.biasOldNew")), `${fmtNum(u.old)} → ${fmtNum(u.nw)}`, signCls(u.nw));
     }
   }
   return `<div class="tip-title">${esc(neuronName(l, j, nL))}</div>
-    <div class="tip-sub">${esc(layerName(l, nL))} layer${l > 0 ? ` · ${out ? "sigmoid" : "ReLU"}` : " · feature"}</div>
+    <div class="tip-sub">${esc(t("tip.layerSub", { layer: layerName(l, nL) }))} · ${esc(l > 0 ? (out ? t("tip.sigmoid") : "ReLU") : t("tip.feature"))}</div>
     <dl class="tip-grid">${rows}</dl>`;
 }
 
@@ -986,7 +984,7 @@ const ruleLine   = col => " ".repeat(col + 3) + "───────";
 
 function formulaHead(name, user) {
   return `<div class="fx-head"><span class="fx-who">${esc(name)}</span>` +
-    `<span class="fx-tag${user ? " is-sel" : ""}">${user ? "selected" : "example · click a neuron"}</span></div>`;
+    `<span class="fx-tag${user ? " is-sel" : ""}">${esc(t(user ? "fx.selected" : "fx.example"))}</span></div>`;
 }
 
 function setFormula(head, lines) {
@@ -1004,9 +1002,9 @@ function formulaInput(d, i, user) {
   const lines = [`x̂${I} = (x${I} − μ${I}) / σ${I}`];
   if (s) lines.push(`    = (${fmtNum(raw, 3)} − ${fmtNum(s.mu, 3)}) / ${fmtNum(s.sd, 3)}`);
   lines.push({ t: `    = ${fmtNum(x, 3)}`, cls: "fx-res" }, "",
-    `μ, σ: mean and std of "${FEAT_FULL[i]}"`,
-    `over all ${st.nSamples || "the"} samples.`,
-    `x̂${I} is fed to every neuron of ${layerName(1, d.architecture.length)}.`);
+    t("fx.meanStd", { feat: featName(i) }),
+    st.nSamples ? t("fx.overN", { n: st.nSamples }) : t("fx.overAll"),
+    t("fx.fedTo", { i: I, layer: layerName(1, d.architecture.length) }));
   setFormula(formulaHead(neuronName(0, i, d.architecture.length), user), lines);
 }
 
@@ -1021,23 +1019,24 @@ function formulaForward(d, l, j, user) {
     W.map((w, i) => ({ lbl: `w${sub2(j + 1, i + 1)}·${src}${sub(i + 1)}`, a: w, b: prev[i] })));
   const lines = [
     `z${J} = Σ w · ${src} + b${J}`,
-    `(one w · ${src} term per neuron of ${layerName(l - 1, nL)})`, "",
+    t("fx.termPer", { src, layer: layerName(l - 1, nL) }), "",
     ...terms,
-    resultLine(`+ b${J} (bias)`, fmtNum(b, 3), col),
+    resultLine(t("fx.biasLbl", { j: J }), fmtNum(b, 3), col),
     ruleLine(col),
     { t: resultLine(`z${J}`, fmtNum(z, 3), col), cls: "fx-res" }, "",
   ];
   if (!out) {
     lines.push({ t: `a${J} = ReLU(z${J}) = max(0, ${fmtNum(z, 3)}) = ${fmtNum(a, 3)}`, cls: "fx-res" });
-    if (z <= 0) lines.push("     z ≤ 0 → this neuron outputs 0 (inactive)");
+    if (z <= 0) lines.push(t("fx.inactive"));
   } else {
     const y = d.true_label;
     lines.push(
       `ŷ = σ(z${J}) = 1 / (1 + e^(−z${J}))`,
       `  = 1 / (1 + e^${fmtNum(-z, 3)})`,
       `  = 1 / (1 + ${fmtNum(Math.exp(-z), 4)})`,
-      { t: `  = ${fmtNum(a, 4)}   ← P(Dog)`, cls: "fx-res" }, "",
-      `L = −[y·log ŷ + (1−y)·log(1−ŷ)],  y = ${y} (${y ? "Dog" : "Cat"})`,
+      { t: `  = ${fmtNum(a, 4)}   ← P(${clsPlain(1)})`, cls: "fx-res" }, "",
+      `y = ${y} (${clsPlain(y)})`,
+      `L = −[y·log ŷ + (1−y)·log(1−ŷ)]`,
       y ? `  = −log(${fmtNum(a, 4)})` : `  = −log(1 − ${fmtNum(a, 4)})`,
       { t: `  = ${fmtNum(d.loss, 4)}`, cls: "fx-res" });
   }
@@ -1050,10 +1049,10 @@ function gradLines(d, l, j, dz) {
   const prev = d.activations[l - 1];
   const { lines: rows } = productBlock(
     prev.map((a, i) => ({ lbl: `∂L/∂w${sub2(j + 1, i + 1)}`, a: dz, b: a })), 4);
-  const lines = ["", `∂L/∂w = δ${J} · ${src}   (one per incoming weight)`, ...rows, `  ∂L/∂b${J} = δ${J} = ${fmtNum(dz, 4)}`];
+  const lines = ["", `∂L/∂w = δ${J} · ${src}   ${t("fx.onePerIn")}`, ...rows, `  ∂L/∂b${J} = δ${J} = ${fmtNum(dz, 4)}`];
   const B = batchSizeOf(d);
   if (B > 1) {
-    lines.push("", `Batch average over B = ${B} (used by the update):`);
+    lines.push("", t("fx.batchAvgUsed", { B }));
     const g = d.grad_w[l - 1][j];
     const lw = vlen(`∂L/∂w${sub2(j + 1, prev.length)}`);
     g.forEach((v, i) => lines.push(`  ${padR(`∂L/∂w${sub2(j + 1, i + 1)}`, lw)} = ${padL(fmtNum(v, 4), 7)}`));
@@ -1073,7 +1072,7 @@ function formulaBackward(d, l, j, user) {
       `δ${J} = ∂L/∂z${J} = ŷ − y`,
       `   = ${fmtNum(d.probability, 4)} − ${d.true_label}`,
       { t: `   = ${fmtNum(dz, 4)}`, cls: "fx-res" },
-      "(sigmoid + BCE: the derivative simplifies to ŷ − y)",
+      t("fx.bceNote"),
     ];
   } else {
     const Wn = d.weights[l], dn = d.grad_z[l];
@@ -1085,14 +1084,14 @@ function formulaBackward(d, l, j, user) {
       dn.map((dk, k) => ({ lbl: `w${sub2(k + 1, j + 1)}·δ${sub(k + 1)}`, a: Wn[k][j], b: dk })), 4);
     lines = [
       `δ${J} = ∂L/∂z${J} = ∂L/∂a${J} · ReLU'(z${J})`,
-      `∂L/∂a${J} = Σ w · δ over ${layerName(l + 1, nL)} (${dn.length} term${dn.length > 1 ? "s" : ""})`, "",
+      `∂L/∂a${J} = ${t(dn.length > 1 ? "fx.sumOverPl" : "fx.sumOver", { layer: layerName(l + 1, nL), n: dn.length })}`, "",
       ...terms,
       ruleLine(col),
       resultLine(`∂L/∂a${J} = Σ`, fmtNum(da, 4), col),
       resultLine(`ReLU'(${fmtNum(z, 3)})`, String(relu), col),
       { t: resultLine(`δ${J} = ∂L/∂a${J}·ReLU'`, fmtNum(dz, 4), col), cls: "fx-res" },
     ];
-    if (!relu) lines.push("z ≤ 0 → gradient blocked (ReLU' = 0)");
+    if (!relu) lines.push(t("fx.blocked"));
   }
   lines.push(...gradLines(d, l, j, dz));
   setFormula(formulaHead(neuronName(l, j, nL), user), lines);
@@ -1105,13 +1104,13 @@ function formulaBackwardInput(d, i, user) {
   const { lines: rows } = productBlock(
     dn.map((dj, j) => ({ lbl: `∂L/∂w${sub2(j + 1, i + 1)}`, a: dj, b: x })), 4);
   const lines = [
-    `Inputs are data: no δ to backpropagate.`,
-    `Weights leaving x̂${I} (into ${layerName(1, nL)}):`,
-    `∂L/∂w = δ · x̂${I}   (one per neuron it feeds)`, "", ...rows,
+    t("fx.inputsNoDelta"),
+    t("fx.weightsLeaving", { i: I, layer: layerName(1, nL) }),
+    `∂L/∂w = δ · x̂${I}   ${t("fx.onePerFed")}`, "", ...rows,
   ];
   const B = batchSizeOf(d);
   if (B > 1) {
-    lines.push("", `Batch average over B = ${B}:`);
+    lines.push("", t("fx.batchAvg", { B }));
     const lw = vlen(`∂L/∂w${sub2(dn.length, i + 1)}`);
     dn.forEach((_, j) => lines.push(`  ${padR(`∂L/∂w${sub2(j + 1, i + 1)}`, lw)} = ${padL(fmtNum(d.grad_w[0][j][i], 4), 7)}`));
   }
@@ -1135,15 +1134,15 @@ function formulaUpdate(step, d, l, j, user) {
   const gw = Math.max(...items.map(it => vlen(fmtNum(it.vals.g))));
   const lines = [
     `w ← w − α · ∂L/∂w,   α = ${a}`,
-    B > 1 ? `∂L/∂w = batch average over B = ${B}` : `∂L/∂w from the backward pass`,
-    l === 0 ? `(weights leaving this input)` : `(incoming weights and bias)`, "",
+    B > 1 ? t("fx.gradBatch", { B }) : t("fx.gradFromBwd"),
+    l === 0 ? t("fx.leavingInput") : t("fx.incomingBias"), "",
     ...items.map(it => {
       const line = `  ${padR(it.lbl, lw)} = ${padL(fmtNum(it.vals.old), ow)} − ${a} × ${padL(fmtNum(it.vals.g), gw)} = ${padL(fmtNum(it.vals.nw), 7)}`;
       return Math.abs(it.vals.delta) > 1e-12 ? line : { t: line, cls: "fx-dim" };
     }),
     "",
-    u0.applied ? { t: "✓ Applied: these are the new values.", cls: "fx-ok" }
-               : "Preview: click “Apply Weight Update” to commit.",
+    u0.applied ? { t: t("fx.applied"), cls: "fx-ok" }
+               : t("fx.preview"),
   ];
   setFormula(formulaHead(neuronName(l, j, nL), user), lines);
 }
@@ -1193,19 +1192,18 @@ function renderInfo(step, d) {
 
     // ── INPUT ──────────────────────────────────────────────
     case "input": {
-      title.textContent = `Input — Sample #${d.sample_idx + 1}  (True: ${CLS[lbl]})`;
+      title.textContent = t("info.inputTitle", { n: d.sample_idx + 1, cls: clsName(lbl) });
       body.innerHTML = `
         <table>
-          <tr><th>Feature</th><th>Raw value</th><th>Normalized</th></tr>
-          ${FEAT_FULL.map((f, i) => `
-            <tr data-sel-l="0" data-sel-i="${i}"><td>${f}</td>
+          <tr><th>${t("th.feature")}</th><th>${t("th.raw")}</th><th>${t("th.norm")}</th></tr>
+          ${Array.from({ length: N_FEAT }, (_, i) => featName(i)).map((f, i) => `
+            <tr data-sel-l="0" data-sel-i="${i}"><td>${esc(f)}</td>
                 <td>${raw[i].toFixed(3)}</td>
                 <td class="${norm[i] >= 0 ? "vp" : "vn"}">${norm[i].toFixed(3)}</td></tr>
           `).join("")}
         </table>
         <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">
-          Features are <strong>standardized</strong>: x̂ = (x − μ) / σ<br>
-          These 4 values enter the network as input activations.
+          ${t("info.inputNote")}
         </p>`;
       break;
     }
@@ -1215,7 +1213,7 @@ function renderInfo(step, d) {
       const l    = step.layer;
       const acts = d.activations[l];
       const pres = d.pre_activations[l - 1];
-      title.textContent = `Forward — Hidden Layer ${l}  (ReLU)`;
+      title.textContent = t("info.fwdHiddenTitle", { l });
 
       const rows = acts.slice(0, MAX_N).map((a, ni) => {
         const z   = pres[ni];
@@ -1223,11 +1221,11 @@ function renderInfo(step, d) {
         return `<tr data-sel-l="${l}" data-sel-i="${ni}"><td>n${ni+1}</td>
           <td class="${z >= 0 ? "vp" : "vn"}">${z.toFixed(3)}</td>
           <td class="${cls}">${a.toFixed(3)}</td>
-          ${a < 0.001 && z < 0 ? '<td class="vn" style="font-size:10px">⚡ dead</td>' : '<td></td>'}</tr>`;
-      }).join("") + (acts.length > MAX_N ? `<tr><td colspan="4" class="muted">… ${acts.length - MAX_N} more</td></tr>` : "");
+          ${a < 0.001 && z < 0 ? `<td class="vn" style="font-size:10px">${t("info.dead")}</td>` : '<td></td>'}</tr>`;
+      }).join("") + (acts.length > MAX_N ? `<tr><td colspan="4" class="muted">${t("info.more", { n: acts.length - MAX_N })}</td></tr>` : "");
 
       body.innerHTML = `
-        <table><tr><th>Neuron</th><th>z (pre-act.)</th><th>a = ReLU(z)</th><th></th></tr>${rows}</table>`;
+        <table><tr><th>${t("th.neuron")}</th><th>${t("th.preAct")}</th><th>a = ReLU(z)</th><th></th></tr>${rows}</table>`;
       break;
     }
 
@@ -1236,16 +1234,16 @@ function renderInfo(step, d) {
       const prob = d.probability;
       const pred = d.prediction;
       const z_out = d.pre_activations[d.pre_activations.length - 1][0];
-      title.textContent = "Forward — Output Layer  (Sigmoid)";
+      title.textContent = t("info.fwdOutputTitle");
 
       body.innerHTML = `
         <table>
-          <tr><th>Value</th><th></th></tr>
-          <tr><td>z (pre-activation)</td><td class="${z_out >= 0 ? "vp" : "vn"}">${z_out.toFixed(4)}</td></tr>
-          <tr><td>ŷ = σ(z)  = P(Dog)</td><td class="vhl">${prob.toFixed(4)}</td></tr>
-          <tr><td>Prediction</td><td style="color:${CCOL[pred]};font-weight:700">${CLS[pred]}</td></tr>
-          <tr><td>True label</td><td style="color:${CCOL[lbl]}">${CLS[lbl]}</td></tr>
-          <tr><td>Correct?</td><td class="${pred === lbl ? "vp" : "vn"}">${pred === lbl ? "✓ Yes" : "✗ No"}</td></tr>
+          <tr><th>${t("th.value")}</th><th></th></tr>
+          <tr><td>${t("info.zPre")}</td><td class="${z_out >= 0 ? "vp" : "vn"}">${z_out.toFixed(4)}</td></tr>
+          <tr><td>${t("info.pDog")}</td><td class="vhl">${prob.toFixed(4)}</td></tr>
+          <tr><td>${t("info.prediction")}</td><td style="color:${CCOL[pred]};font-weight:700">${clsName(pred)}</td></tr>
+          <tr><td>${t("info.trueLabel")}</td><td style="color:${CCOL[lbl]}">${clsName(lbl)}</td></tr>
+          <tr><td>${t("info.correct")}</td><td class="${pred === lbl ? "vp" : "vn"}">${t(pred === lbl ? "info.yes" : "info.no")}</td></tr>
         </table>`;
       break;
     }
@@ -1253,20 +1251,19 @@ function renderInfo(step, d) {
     // ── LOSS ───────────────────────────────────────────────
     case "loss": {
       const prob = d.probability;
-      title.textContent = "Loss — Binary Cross-Entropy";
+      title.textContent = t("info.lossTitle");
       const y = lbl, yhat = prob;
       const termY  = y   === 1 ? `1 × log(${yhat.toFixed(4)})` : `0 × log(${yhat.toFixed(4)})`;
       const term1y = y   === 0 ? `1 × log(${(1 - yhat).toFixed(4)})` : `0 × log(${(1 - yhat).toFixed(4)})`;
       body.innerHTML = `
         <table>
-          <tr><th>Value</th><th></th></tr>
-          <tr><td>True label  y</td><td>${y}  (${CLS[y]})</td></tr>
-          <tr><td>Prediction  ŷ</td><td>${yhat.toFixed(4)}</td></tr>
-          <tr><td>Loss  L</td><td class="vhl" style="font-size:16px">${d.loss.toFixed(4)}</td></tr>
+          <tr><th>${t("th.value")}</th><th></th></tr>
+          <tr><td>${t("info.trueY")}</td><td>${y}  (${clsName(y)})</td></tr>
+          <tr><td>${t("info.predY")}</td><td>${yhat.toFixed(4)}</td></tr>
+          <tr><td>${t("info.lossL")}</td><td class="vhl" style="font-size:16px">${d.loss.toFixed(4)}</td></tr>
         </table>
         <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">
-          High loss → the network is wrong (or uncertain).<br>
-          The backward pass will compute how to reduce this loss.
+          ${t("info.lossNote")}
         </p>`;
       fbox.textContent =
         `L = −[ y · log(ŷ)  +  (1−y) · log(1−ŷ) ]\n  = −[ ${termY}\n    + ${term1y} ]\n  = ${d.loss.toFixed(4)}`;
@@ -1279,26 +1276,26 @@ function renderInfo(step, d) {
       const gz   = d.grad_z[step.wIdx];
       const dz   = gz[0];
       const prob = d.probability;
-      title.textContent = "Backward — Output Layer Gradients";
+      title.textContent = t("info.bwdOutputTitle");
       body.innerHTML = `
         <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">
-          For <strong>BCE + Sigmoid</strong>, the gradient simplifies elegantly:
+          ${t("info.bceIntro")}
         </p>
         <table>
-          <tr><th>Quantity</th><th>Value</th><th>Meaning</th></tr>
+          <tr><th>${t("th.quantity")}</th><th>${t("th.value")}</th><th>${t("th.meaning")}</th></tr>
           <tr><td>dL/dz_out</td>
               <td class="${dz >= 0 ? "vp" : "vn"} vhl">${dz.toFixed(4)}</td>
               <td style="font-size:11px">ŷ − y = ${prob.toFixed(3)} − ${lbl}</td></tr>
           <tr><td>dL/dW_out</td>
-              <td class="vn" style="font-size:11px">matrix (${d.grad_w[step.wIdx].length}×${d.grad_w[step.wIdx][0].length})</td>
+              <td class="vn" style="font-size:11px">${t("info.matrix", { r: d.grad_w[step.wIdx].length, c: d.grad_w[step.wIdx][0].length })}</td>
               <td style="font-size:11px">dz · a_hidden^T</td></tr>
           <tr><td>dL/db_out</td>
               <td class="${dz >= 0 ? "vp" : "vn"}">${dz.toFixed(4)}</td>
               <td style="font-size:11px">= dz</td></tr>
         </table>
         <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">
-          ${dz > 0 ? "dz > 0: output was too high (reduce it)" : "dz < 0: output was too low (increase it)"}<br>
-          This gradient now propagates backward to the hidden layer.
+          ${esc(t(dz > 0 ? "info.tooHigh" : "info.tooLow"))}<br>
+          ${t("info.propagates")}
         </p>`;
       break;
     }
@@ -1309,7 +1306,7 @@ function renderInfo(step, d) {
       const gz   = d.grad_z[step.wIdx];
       const ga   = d.grad_a_hidden && d.grad_a_hidden[step.wIdx];  // gradient at hidden activations
       const pre  = d.pre_activations[step.wIdx];
-      title.textContent = `Backward — Hidden Layer ${l} Gradients`;
+      title.textContent = t("info.bwdHiddenTitle", { l });
       const rows = gz.slice(0, MAX_N).map((dz, ni) => {
         const z    = pre[ni];
         const relu = z > 0 ? 1 : 0;
@@ -1317,26 +1314,25 @@ function renderInfo(step, d) {
         return `<tr data-sel-l="${l}" data-sel-i="${ni}">
           <td>n${ni+1}</td>
           <td class="${(ga ? ga[ni] : 0) >= 0 ? "vp" : "vn"}">${daV}</td>
-          <td>${relu} ${relu === 0 ? '<span class="vn">✗ blocked</span>' : '<span class="vp">✓ pass</span>'}</td>
+          <td>${relu} ${relu === 0 ? `<span class="vn">${t("info.blocked")}</span>` : `<span class="vp">${t("info.pass")}</span>`}</td>
           <td class="${dz >= 0 ? "vp" : "vn"}">${dz.toFixed(4)}</td>
         </tr>`;
-      }).join("") + (gz.length > MAX_N ? `<tr><td colspan="4" class="muted">… ${gz.length - MAX_N} more</td></tr>` : "");
+      }).join("") + (gz.length > MAX_N ? `<tr><td colspan="4" class="muted">${t("info.more", { n: gz.length - MAX_N })}</td></tr>` : "");
 
       body.innerHTML = `
         <table>
-          <tr><th>Neuron</th><th>da (received)</th><th>ReLU'</th><th>dz = da·ReLU'</th></tr>
+          <tr><th>${t("th.neuron")}</th><th>${t("th.received")}</th><th>ReLU'</th><th>dz = da·ReLU'</th></tr>
           ${rows}
         </table>
         <p style="margin-top:8px;font-size:12px;color:var(--text-muted)">
-          Neurons with z≤0 had ReLU output = 0.<br>
-          Their gradient is <strong>blocked</strong> (dead neurons).
+          ${t("info.deadNote")}
         </p>`;
       break;
     }
 
     // ── UPDATE ─────────────────────────────────────────────
     case "update": {
-      title.textContent = "Weight Update — Gradient Descent";
+      title.textContent = t("info.updateTitle");
       const already = step.updated;
 
       if (already && step.updateData) {
@@ -1344,26 +1340,26 @@ function renderInfo(step, d) {
         const pct = ((ud.loss_before - ud.loss_after) / ud.loss_before * 100).toFixed(1);
         body.innerHTML = `
           <table>
-            <tr><th>Quantity</th><th>Before</th><th>After</th></tr>
-            <tr><td>Loss</td>
+            <tr><th>${t("th.quantity")}</th><th>${t("th.before")}</th><th>${t("th.after")}</th></tr>
+            <tr><td>${t("info.loss")}</td>
                 <td>${ud.loss_before.toFixed(4)}</td>
                 <td class="${ud.loss_after < ud.loss_before ? "vp" : "vn"}">${ud.loss_after.toFixed(4)}</td></tr>
           </table>
           <p style="margin-top:10px;font-size:13px;color:var(--pos)">
-            ✓ Weights updated! Loss ${ud.loss_after < ud.loss_before ? "decreased" : "changed"} by ${Math.abs(pct)}%.<br>
-            Run <strong>▶ Compute</strong> again to do the next training step.
+            ${t(ud.loss_after < ud.loss_before ? "info.doneDecreased" : "info.doneChanged", { pct: Math.abs(pct) })}<br>
+            ${t("info.runAgain")}
           </p>`;
       } else {
         const lr = getLR();
         body.innerHTML = `
           <p style="font-size:13px;margin-bottom:10px">
-            All gradients computed. Gradient descent will update every weight:
+            ${t("info.allGrads")}
           </p>
           <div class="update-rule">W  ← W  − α · dL/dW\nb  ← b  − α · dL/db\nα  = ${fmtLR(lr)}
           </div>
           <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">
-            • Connections lit in <span style="color:var(--w-inc)">blue</span>: weight increases (dw &lt; 0)<br>
-            • Connections lit in <span style="color:var(--w-dec)">rose</span>: weight decreases (dw &gt; 0)
+            ${t("info.legendInc")}<br>
+            ${t("info.legendDec")}
           </p>`;
       }
       break;
@@ -1384,9 +1380,10 @@ function buildSampleSelect() {
   st.yLabels.forEach((lbl, i) => {
     const opt = document.createElement("option");
     opt.value = i;
-    opt.textContent = `#${i+1}  ${CLS[lbl]}`;
+    opt.textContent = `#${i+1}  ${clsName(lbl)}`;
     sel.appendChild(opt);
   });
+  if (st.sample < st.yLabels.length) sel.value = st.sample;
 }
 
 /* ════════════════════════════════════════════════════════
@@ -1398,7 +1395,7 @@ function renderLossChart() {
   const empty = !st.lossHistory.length;
   document.getElementById("loss-empty").hidden = !empty;
   document.getElementById("loss-wrap").hidden = empty;
-  if (empty) { document.getElementById("loss-now").textContent = ""; return; }
+  if (empty) { st.lossNow = null; renderLossNow(); return; }
   const ctx = document.getElementById("loss-chart").getContext("2d");
   const T = theme();
   st.lossChart = new Chart(ctx, {
@@ -1406,7 +1403,7 @@ function renderLossChart() {
     data: {
       labels: st.lossHistory.map((_, i) => i + 1),
       datasets: [{
-        label: "Mean batch loss per update",
+        label: t("loss.dataset"),
         data: st.lossHistory,
         borderColor: T.accent,
         backgroundColor: withAlpha(T.accent, 0.1),
@@ -1419,10 +1416,11 @@ function renderLossChart() {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
+      locale: "en-US",   // '.' decimals in every UI language, matching the formulas
       animation: { duration: 400 },
       plugins: {
         legend: { labels: { color: T.textDim, font: { size: 11 } } },
-        tooltip: { backgroundColor: T.text, titleColor: T.bg, bodyColor: T.bg, callbacks: { label: c => `Loss: ${c.raw.toFixed(4)}` } },
+        tooltip: { backgroundColor: T.text, titleColor: T.bg, bodyColor: T.bg, callbacks: { label: c => t("loss.tooltip", { v: c.raw.toFixed(4) }) } },
       },
       scales: {
         x: { ticks: { color: T.textMuted, maxTicksLimit: 8 }, grid: { color: T.chartGrid }, border: { color: T.border } },
@@ -1432,8 +1430,18 @@ function renderLossChart() {
   });
 }
 
+// "Loss: before → after (±pct%)" line under the chart, for the last update.
+function renderLossNow() {
+  const el = document.getElementById("loss-now");
+  const s = st.lossNow;
+  if (!s) { el.textContent = ""; return; }
+  const pct = ((s.before - s.after) / s.before * 100).toFixed(1);
+  const improved = s.after < s.before;
+  el.textContent = `${t(s.batch ? "loss.nowBatch" : "loss.nowSingle")}: ${s.before.toFixed(4)} → ${s.after.toFixed(4)}  (${improved ? "▼ −" : "▲ +"}${Math.abs(pct)}%)`;
+}
+
 function updateEpoch(n) {
-  document.getElementById("epoch-badge").textContent = `Epoch ${n}`;
+  setI18n("epoch-badge", "epoch", { n });
 }
 
 /* ════════════════════════════════════════════════════════
@@ -1503,24 +1511,21 @@ function renderBatchPanel(step, d) {
   const b   = d.batch;
   const ud  = step.type === "update" && step.updated ? step.updateData : null;
   const cur = b.samples[st.focus];
-  const avgNote =
-    `Gradients are <strong>batch-averaged</strong>: ∂L/∂W = (1/B) Σᵢ ∂Lᵢ/∂W, with B = ${B}.`;
+  const avgNote = t("batch.avgNote", { B });
 
   let html = `<div class="batch-head">
-      <span>Mini-batch · B = ${B}</span>
-      <span>focus: <strong>#${cur.sample_idx + 1}</strong> (${st.focus + 1}/${B}) · mean loss
+      <span>${t("batch.head", { B })}</span>
+      <span>${t("batch.focus", { n: cur.sample_idx + 1, k: st.focus + 1, B })}
         <strong class="vhl">${b.mean_loss.toFixed(4)}</strong></span>
     </div>`;
 
   if (step.phase === "backward") {
-    html += `<p class="batch-note">The values above are for the focus sample only (per-sample ∂Lᵢ).
-      ${avgNote} The update applies the average, not the focus sample's gradient.</p>`;
+    html += `<p class="batch-note">${t("batch.bwdNote", { avg: avgNote })}</p>`;
   } else if (step.phase === "update") {
-    html += `<p class="batch-note">${avgNote} Edge colors show Δw = −α · (1/B) Σᵢ ∂Lᵢ/∂W.
-      ${ud ? "Loss before/after above is the mean over the batch." : ""}</p>`;
+    html += `<p class="batch-note">${t("batch.updNote", { avg: avgNote })}
+      ${ud ? t("batch.updAfter") : ""}</p>`;
   } else if (step.phase === "loss") {
-    html += `<p class="batch-note">Batch loss L = (1/B) Σᵢ Lᵢ = <strong>${b.mean_loss.toFixed(4)}</strong>.
-      The panel above shows Lᵢ for the focus sample.</p>`;
+    html += `<p class="batch-note">${t("batch.lossNote", { v: b.mean_loss.toFixed(4) })}</p>`;
   }
 
   if (step.phase === "loss" || step.phase === "update") {
@@ -1530,26 +1535,26 @@ function renderBatchPanel(step, d) {
       const after = ud && ud.batch_losses_after ? ud.batch_losses_after[k] : null;
       return `<tr class="batch-row${k === st.focus ? " batch-focus" : ""}" data-k="${k}">
         <td>#${s.sample_idx + 1}</td>
-        <td class="${lbl ? "batch-dog" : "batch-cat"}">${CLS[lbl]}</td>
+        <td class="${lbl ? "batch-dog" : "batch-cat"}">${clsName(lbl)}</td>
         <td class="${pred === lbl ? "vp" : "vn"}">${p.toFixed(3)}</td>
         <td>${b.losses[k].toFixed(4)}</td>
         ${after !== null ? `<td class="${after < b.losses[k] ? "vp" : "vn"}">${after.toFixed(4)}</td>` : ""}
       </tr>`;
     }).join("");
     html += `<div class="batch-table-wrap"><table class="batch-table">
-        <tr><th>Sample</th><th>True</th><th>ŷ</th><th>${ud ? "Lᵢ before" : "Lᵢ"}</th>${ud ? "<th>Lᵢ after</th>" : ""}</tr>
+        <tr><th>${t("batch.thSample")}</th><th>${t("batch.thTrue")}</th><th>ŷ</th><th>${ud ? t("batch.thBefore") : "Lᵢ"}</th>${ud ? `<th>${t("batch.thAfter")}</th>` : ""}</tr>
         ${rows}
-        <tr class="batch-mean"><td colspan="3">Mean (1/B) Σ Lᵢ</td>
+        <tr class="batch-mean"><td colspan="3">${t("batch.mean")}</td>
           <td>${b.mean_loss.toFixed(4)}</td>${ud ? `<td>${ud.loss_after.toFixed(4)}</td>` : ""}</tr>
       </table></div>`;
   } else {
     // Compact chip strip for the other steps
     html += `<div class="batch-chips">${b.samples.map((s, k) =>
       `<button class="batch-chip ${b.true_labels[k] ? "batch-dog" : "batch-cat"}${k === st.focus ? " batch-focus" : ""}"
-         data-k="${k}" title="Sample #${s.sample_idx + 1} · ${CLS[b.true_labels[k]]} · ŷ=${b.probabilities[k].toFixed(3)} · L=${b.losses[k].toFixed(4)}">#${s.sample_idx + 1}</button>`
+         data-k="${k}" title="${esc(t("batch.chipTitle", { n: s.sample_idx + 1, cls: clsName(b.true_labels[k]), p: b.probabilities[k].toFixed(3), l: b.losses[k].toFixed(4) }))}">#${s.sample_idx + 1}</button>`
     ).join("")}</div>`;
   }
-  html += `<div class="batch-hint">Click a sample to show it in the network.</div>`;
+  html += `<div class="batch-hint">${t("batch.hint")}</div>`;
 
   panel.innerHTML = html;
   panel.querySelectorAll("[data-k]").forEach(el =>
@@ -1568,9 +1573,9 @@ function currentTheme() {
 function updateThemeToggleLabel() {
   const btn = document.getElementById("theme-toggle");
   if (!btn) return;
-  const next = currentTheme() === "dark" ? "light" : "dark";
-  btn.setAttribute("aria-label", `Switch to ${next} theme`);
-  btn.setAttribute("title", `Switch to ${next} theme`);
+  const label = t(currentTheme() === "dark" ? "theme.toLight" : "theme.toDark");
+  btn.setAttribute("aria-label", label);
+  btn.setAttribute("title", label);
 }
 
 // Re-apply theme colors to everything drawn by JS (SVG network, info panel, loss chart).
@@ -1604,3 +1609,17 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   }
 });
+
+/* ════════════════════════════════════════════════════════
+   Language switch (strings live in i18n.js; setLang() calls this)
+   Re-renders every JS-generated view in place, keeping all state.
+   ════════════════════════════════════════════════════════ */
+function refreshLangViews() {
+  updateThemeToggleLabel();
+  buildArchRow();
+  if (st.yLabels.length) buildSampleSelect();
+  hideTip();
+  if (st.steps.length && st.data) goStep(st.step);   // step bar, network, info, formula, batch panel
+  renderLossChart();
+  renderLossNow();
+}

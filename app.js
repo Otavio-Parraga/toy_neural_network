@@ -82,6 +82,7 @@ const st = {
   lossHistory: [],
   batchSize: 1,       // mini-batch size B sent to /api/compute
   focus: 0,           // index into data.batch.samples shown in the network
+  showWeights: false, // label edges with their weight values
 };
 
 /* ════════════════════════════════════════════════════════
@@ -157,6 +158,10 @@ function wireControls() {
   document.getElementById("sel-sample").addEventListener("change", e => {
     st.sample = parseInt(e.target.value);
   });
+  document.getElementById("chk-weights").addEventListener("change", e => {
+    st.showWeights = e.target.checked;
+    if (st.steps.length && st.data) drawNetwork(st.steps[st.step], st.data);
+  });
 }
 
 function getLR() { return Math.pow(10, parseFloat(document.getElementById("sl-lr").value)); }
@@ -192,6 +197,8 @@ async function apiInit() {
   updateEpoch(0);
   document.getElementById("step-bar").classList.add("hidden");
   document.getElementById("net-placeholder").style.display = "flex";
+  document.getElementById("net-toolbar").classList.add("hidden");
+  hideTip();
   document.getElementById("net-container").innerHTML = "";
   document.getElementById("info-body").innerHTML = '<p class="muted">Architecture reset. Click ▶ Compute to run a training step.</p>';
   document.getElementById("formula-box").style.display = "none";
@@ -215,6 +222,7 @@ async function apiCompute() {
     st.focus = 0;
     st.steps = buildSteps(st.data);
     document.getElementById("net-placeholder").style.display = "none";
+    document.getElementById("net-toolbar").classList.remove("hidden");
     document.getElementById("step-bar").classList.remove("hidden");
     document.getElementById("compute-hint").textContent =
       batchSizeOf(st.data) > 1
@@ -232,9 +240,10 @@ async function apiCompute() {
    API: apply update
    ════════════════════════════════════════════════════════ */
 async function apiUpdate() {
+  const lr = getLR();
   const res = await fetch(`${API}/api/update`, {
     method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ lr: getLR() }),
+    body: JSON.stringify({ lr }),
   });
   const d = await res.json();
   st.lossHistory = d.loss_history;
@@ -251,6 +260,7 @@ async function apiUpdate() {
   const last = st.steps[st.steps.length - 1];
   last.updated = true;
   last.updateData = d;
+  last.lr = lr;
   goStep(st.steps.length - 1);
 
   document.getElementById("btn-update").classList.add("hidden");
@@ -337,6 +347,7 @@ function goStep(n) {
 function drawNetwork(step, d) {
   const arch = d.architecture;
   const cont = document.getElementById("net-container");
+  hideTip();
   cont.innerHTML = "";
 
   const W  = Math.max(cont.clientWidth || 650, 400);
@@ -345,7 +356,8 @@ function drawNetwork(step, d) {
   const nL = arch.length;
   const T  = theme();
 
-  const svg = d3.select("#net-container").append("svg").attr("width", W).attr("height", H);
+  const svg = d3.select("#net-container").append("svg")
+    .attr("class", "net-svg").attr("width", W).attr("height", H);
 
   // Glow filter
   const defs = svg.append("defs");
@@ -354,6 +366,12 @@ function drawNetwork(step, d) {
   const m = f.append("feMerge");
   m.append("feMergeNode").attr("in","blur");
   m.append("feMergeNode").attr("in","SourceGraphic");
+
+  // Paint order: visible edges → weight labels → invisible hit paths → neurons
+  const gEdges  = svg.append("g").attr("class", "edges");
+  const gLabels = svg.append("g").attr("class", "edge-labels");
+  const gHits   = svg.append("g").attr("class", "edge-hits");
+  const gNodes  = svg.append("g").attr("class", "nodes");
 
   const xOf = l => ML + (l / (nL - 1)) * (W - ML - MR);
   const yOf = (l) => {
@@ -370,12 +388,8 @@ function drawNetwork(step, d) {
     return a && n < a.length ? a[n] : null;
   };
 
-  // ── Gradient value at weight index wIdx, output neuron, input neuron si ──
-  const gradWOf = (wIdx, di, si) => {
-    if (!d.grad_w || !d.grad_w[wIdx]) return null;
-    const g = d.grad_w[wIdx];
-    return di < g.length && si < g[di].length ? g[di][si] : null;
-  };
+  const labelled = new Set(weightLabelLayers(step, nL));
+  const ud = step.phase === "update" && step.updated ? step.updateData : null;
 
   // ── Draw edges ──────────────────────────────────────────
   for (let l = 0; l < nL - 1; l++) {
@@ -385,6 +399,9 @@ function drawNetwork(step, d) {
     const isFwdActive = step.phase === "forward"  && step.layer === l + 1;
     const isBwdActive = step.phase === "backward" && step.wIdx  === l;
     const isUpdate    = step.phase === "update";
+
+    // Weight labels sit near the source end, where the fan-out keeps them apart
+    const tLbl = Math.max(0.14, Math.min(0.45, 1 / (dstYs.length + 1.2)));
 
     srcYs.forEach((sy, si) => {
       dstYs.forEach((dy, di) => {
@@ -416,13 +433,54 @@ function drawNetwork(step, d) {
         if (isFwdActive) { color = T.fwd; width = Math.max(width, 1.2); opacity = Math.max(opacity, 0.55); extraClass = "edge-pulse"; }
         if (isBwdActive) { color = T.bwd; width = Math.max(width, 1.2); opacity = Math.max(opacity, 0.55); extraClass = "edge-pulse"; }
 
-        const line = svg.append("line")
-          .attr("x1", xOf(l)).attr("y1", sy)
-          .attr("x2", xOf(l+1)).attr("y2", dy)
+        const x1 = xOf(l), x2 = xOf(l + 1);
+        const line = gEdges.append("line")
+          .attr("class", "edge")
+          .attr("x1", x1).attr("y1", sy)
+          .attr("x2", x2).attr("y2", dy)
           .attr("stroke", color)
           .attr("stroke-width", width)
           .attr("opacity", opacity);
         if (extraClass) line.classed(extraClass, true);
+
+        // Optional always-visible weight label
+        if (st.showWeights && labelled.has(l)) {
+          const wv = ud ? ud.weights_new[l][di][si] : d.weights[l][di][si];
+          const lx = x1 + tLbl * (x2 - x1), ly = sy + tLbl * (dy - sy);
+          const txt = fmtNum(wv, 2);
+          const lg = gLabels.append("g").attr("transform", `translate(${lx},${ly})`);
+          lg.append("rect")
+            .attr("x", -txt.length * 2.7 - 3).attr("y", -6.5)
+            .attr("width", txt.length * 5.4 + 6).attr("height", 13).attr("rx", 3)
+            .attr("fill", withAlpha(T.surface, 0.88));
+          lg.append("text")
+            .attr("class", "edge-label")
+            .attr("text-anchor", "middle").attr("dy", "0.35em")
+            .attr("fill", wv >= 0 ? T.pos : T.neg)
+            .text(txt);
+        }
+
+        // Invisible, wide hit path so thin edges are easy to hover / tap
+        const hit = gHits.append("line")
+          .attr("class", "edge-hit")
+          .attr("x1", x1).attr("y1", sy)
+          .attr("x2", x2).attr("y2", dy);
+        const baseWidth = width;
+        const enter = ev => {
+          clearHotEdge();
+          svg.classed("edge-hovering", true);
+          line.classed("edge-hot", true).attr("stroke-width", Math.max(baseWidth, 2.5));
+          hotEdge = { svg, line, baseWidth };
+          showTip(edgeTipHTML(step, d, l, di, si), ev);
+        };
+        hit.on("pointerenter", enter)
+           .on("click", enter)
+           .on("pointermove", moveTip)
+           .on("pointerleave", ev => {
+             if (ev.pointerType === "touch") return;   // touch: keep until the next tap elsewhere
+             clearHotEdge();
+             hideTip();
+           });
       });
     });
 
@@ -430,7 +488,7 @@ function drawNetwork(step, d) {
     if (isBwdActive) {
       const midX = (xOf(l) + xOf(l+1)) / 2;
       const midY = H / 2;
-      svg.append("text")
+      gLabels.append("text")
         .attr("x", midX).attr("y", midY - 18)
         .attr("text-anchor", "middle")
         .attr("fill", T.bwd).attr("font-size", "14px")
@@ -439,7 +497,7 @@ function drawNetwork(step, d) {
     if (isFwdActive) {
       const midX = (xOf(l) + xOf(l+1)) / 2;
       const midY = H / 2;
-      svg.append("text")
+      gLabels.append("text")
         .attr("x", midX).attr("y", midY - 18)
         .attr("text-anchor", "middle")
         .attr("fill", T.fwd).attr("font-size", "14px")
@@ -453,10 +511,9 @@ function drawNetwork(step, d) {
     const ys  = yOf(l);
     const isHL = step.layer === l;
     const isBwd = step.phase === "backward" && step.layer === l;
-    const isUpd = step.phase === "update";
 
     // Layer label
-    const lname = l === 0 ? "Input" : (l === nL - 1 ? "Output" : `Hidden ${l}`);
+    const lname = layerName(l, nL);
     const fnname = l > 0 ? (l === nL - 1 ? "σ(z)" : "ReLU(z)") : "";
     svg.append("text")
       .attr("x", xs).attr("y", MT - 20)
@@ -482,20 +539,17 @@ function drawNetwork(step, d) {
 
     ys.forEach((y, ni) => {
       const act  = actOf(l, ni);
-      const g    = svg.append("g").attr("transform", `translate(${xs},${y})`);
+      const g    = gNodes.append("g")
+        .attr("class", "neuron")
+        .attr("data-l", l).attr("data-i", ni)
+        .attr("transform", `translate(${xs},${y})`);
 
       // Determine fill / stroke based on phase + layer
       let fill   = T.nodeFill;
       let stroke = T.nodeStroke;
       let showVal = null;
 
-      // Forward: show activation once computed
-      const fwdComputed = (step.phase === "forward"  && l <= step.layer)
-                       || step.phase === "loss"
-                       || step.phase === "backward"
-                       || step.phase === "update";
-
-      if (fwdComputed && act !== null) {
+      if (fwdComputed(step, l) && act !== null) {
         if (l === nL - 1) {
           fill = d3.interpolateRgb(T.cat, T.dog)(act);
         } else if (l === 0) {
@@ -525,7 +579,7 @@ function drawNetwork(step, d) {
           .attr("filter", "url(#glow)");
       }
 
-      g.append("circle").attr("r", R)
+      g.append("circle").attr("class", "node-core").attr("r", R)
         .attr("fill", fill).attr("stroke", stroke)
         .attr("stroke-width", isHL ? 2 : 1);
 
@@ -535,6 +589,10 @@ function drawNetwork(step, d) {
           .attr("fill", inkOn(fill, T)).attr("font-size", "9px").attr("font-weight", "bold")
           .text(showVal);
       }
+
+      g.on("pointerenter", ev => showTip(neuronTipHTML(step, d, l, ni), ev))
+       .on("pointermove", moveTip)
+       .on("pointerleave", ev => { if (ev.pointerType !== "touch") hideTip(); });
 
       // Input layer: feature names on the left
       if (l === 0 && FEAT[ni]) {
@@ -561,6 +619,207 @@ function drawNetwork(step, d) {
       }
     });
   });
+}
+
+// Which weight layers get always-visible labels when "Show weights" is on:
+// the active layer in forward/backward steps, every layer otherwise.
+function weightLabelLayers(step, nL) {
+  if ((step.phase === "forward" || step.phase === "backward") && step.wIdx != null) return [step.wIdx];
+  return Array.from({length: nL - 1}, (_, l) => l);
+}
+
+/* ════════════════════════════════════════════════════════
+   Hover tooltips (edges + neurons)
+   ════════════════════════════════════════════════════════ */
+let hotEdge = null;       // currently highlighted edge {svg, line, baseWidth}
+
+function clearHotEdge() {
+  if (!hotEdge) return;
+  hotEdge.svg.classed("edge-hovering", false);
+  hotEdge.line.classed("edge-hot", false).attr("stroke-width", hotEdge.baseWidth);
+  hotEdge = null;
+}
+
+function tipEl() { return document.getElementById("net-tip"); }
+
+function showTip(html, ev) {
+  const tip = tipEl();
+  if (!tip) return;
+  tip.innerHTML = html;
+  tip.hidden = false;
+  moveTip(ev);
+}
+
+// Place the tooltip next to the pointer (or an element's box), flipped to stay in the viewport.
+function moveTip(ev) {
+  const tip = tipEl();
+  if (!tip || tip.hidden || !ev) return;
+  let x, y;
+  if (ev.clientX != null && (ev.clientX || ev.clientY)) { x = ev.clientX; y = ev.clientY; }
+  else if (ev.target && ev.target.getBoundingClientRect) {
+    const r = ev.target.getBoundingClientRect();
+    x = r.right; y = r.top + r.height / 2;
+  } else return;
+  const pad = 8, off = 14;
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+  let left = x + off, top = y + off;
+  if (left + w + pad > vw) left = x - off - w;
+  if (top + h + pad > vh) top = y - off - h;
+  tip.style.left = `${Math.max(pad, Math.min(left, vw - w - pad))}px`;
+  tip.style.top  = `${Math.max(pad, Math.min(top,  vh - h - pad))}px`;
+}
+
+function hideTip() {
+  const tip = tipEl();
+  if (tip) tip.hidden = true;
+  clearHotEdge();
+}
+
+// Tap/click outside the network's interactive parts dismisses a pinned (touch) tooltip.
+document.addEventListener("pointerdown", ev => {
+  if (!(ev.target.closest && ev.target.closest(".edge-hit, .neuron"))) hideTip();
+});
+window.addEventListener("scroll", () => hideTip(), { passive: true });
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// Signed number with a real minus sign; tiny non-zero values use exponent notation.
+function fmtNum(v, p = 4) {
+  if (v == null || isNaN(v)) return "—";
+  if (v !== 0 && Math.abs(v) < Math.pow(10, -p) / 2 && p >= 3) {
+    return v.toExponential(1).replace(/-/g, "−").replace("e+", "e");
+  }
+  const s = Math.abs(v).toFixed(p);
+  return (v < 0 && Number(s) !== 0 ? "−" : "") + s;
+}
+const signCls = v => (v > 0 ? "vp" : v < 0 ? "vn" : "v0");
+
+const SUBS = "₀₁₂₃₄₅₆₇₈₉";
+const sub = n => String(n).split("").map(c => SUBS[+c] || c).join("");
+// Weight index subscript w_ji (1-based); comma only when an index has 2 digits.
+const sub2 = (j, i) => (j < 10 && i < 10) ? sub(j) + sub(i) : `${sub(j)},${sub(i)}`;
+
+function layerName(l, nL) {
+  return l === 0 ? "Input" : (l === nL - 1 ? "Output" : `Hidden ${l}`);
+}
+// Short name for a neuron, e.g. "Hidden 1 · n2" or the feature name for inputs.
+function neuronName(l, i, nL) {
+  if (l === 0) return FEAT_FULL[i] || `Input · x${i + 1}`;
+  if (l === nL - 1) return "Output · ŷ";
+  return `${layerName(l, nL)} · n${i + 1}`;
+}
+
+// Has the forward pass reached layer l at this step?
+function fwdComputed(step, l) {
+  return (step.phase === "forward" && l <= step.layer) || step.phase !== "forward";
+}
+// Has the backward pass produced δ for layer l (l ≥ 1) at this step?
+function gradComputed(step, l) {
+  return l >= 1 && ((step.phase === "backward" && l >= step.layer) || step.phase === "update");
+}
+
+function tipRow(label, value, cls = "") {
+  return `<dt>${label}</dt><dd class="${cls}">${value}</dd>`;
+}
+const tipSep = () => `<div class="tip-sep"></div>`;
+
+// Weight-update values for W[l][j][i] (or bias when i == null): old, grad, Δ, new, α.
+function updateVals(step, d, l, j, i) {
+  const bias = i == null;
+  const old  = bias ? d.biases[l][j] : d.weights[l][j][i];
+  const g    = bias ? d.grad_b[l][j] : d.grad_w[l][j][i];
+  const ud   = step.updated ? step.updateData : null;
+  const lr   = ud && step.lr != null ? step.lr : getLR();
+  const nw   = ud ? (bias ? ud.biases_new[l][j] : ud.weights_new[l][j][i]) : old - lr * g;
+  return { old, g, lr, nw, delta: nw - old, applied: !!ud };
+}
+
+const fmtLR = lr => String(+lr.toPrecision(2));
+
+function edgeTipHTML(step, d, l, j, i) {
+  const nL = d.architecture.length;
+  const B  = batchSizeOf(d);
+  const w  = d.weights[l][j][i];
+  const src = l === 0 ? `x̂${sub(i + 1)}` : `a${sub(i + 1)}`;
+  let rows = tipRow(`w${sub2(j + 1, i + 1)}`, fmtNum(w), signCls(w));
+
+  if (step.phase === "forward" || step.phase === "loss") {
+    if (fwdComputed(step, l)) {
+      const a = d.activations[l][i];
+      rows += tipRow(`${src} <span class="tip-dim">(source)</span>`, fmtNum(a), signCls(a));
+      rows += tipSep();
+      rows += tipRow(`w · ${src}`, fmtNum(w * a), `${signCls(w * a)} tip-strong`);
+      rows += `<div class="tip-note">This connection's contribution to z${sub(j + 1)} of ${esc(neuronName(l + 1, j, nL))}.</div>`;
+    } else {
+      rows += `<div class="tip-note">Source activation not computed yet — step forward to see w · a.</div>`;
+    }
+  } else if (step.phase === "backward") {
+    if (gradComputed(step, l + 1)) {
+      const dz = d.grad_z[l][j], a = d.activations[l][i];
+      rows += tipRow(`δ${sub(j + 1)} <span class="tip-dim">(target)</span>`, fmtNum(dz), signCls(dz));
+      rows += tipRow(`${src} <span class="tip-dim">(source)</span>`, fmtNum(a), signCls(a));
+      rows += tipSep();
+      rows += tipRow(`∂L/∂w = δ · ${src}`, fmtNum(dz * a), `${signCls(dz * a)} tip-strong`);
+      if (B > 1) {
+        const gAvg = d.grad_w[l][j][i];
+        rows += tipRow(`batch avg ∂L/∂w`, fmtNum(gAvg), signCls(gAvg));
+        rows += `<div class="tip-note">δ · a is for the focus sample; the update uses the mean over B = ${B}.</div>`;
+      }
+    } else {
+      rows += `<div class="tip-note">Gradient not computed yet — backprop reaches this layer in a later step.</div>`;
+    }
+  } else if (step.phase === "update") {
+    const u = updateVals(step, d, l, j, i);
+    rows = tipRow("old w", fmtNum(u.old), signCls(u.old));
+    rows += tipRow(`∂L/∂w${B > 1 ? " (avg)" : ""}`, fmtNum(u.g), signCls(u.g));
+    rows += tipRow(`Δw = −α·∂L/∂w`, fmtNum(u.delta, 5), signCls(u.delta));
+    rows += tipSep();
+    rows += tipRow("new w", fmtNum(u.nw), `${signCls(u.nw)} tip-strong`);
+    rows += `<div class="tip-note">${u.applied ? "Applied" : "Preview"} with α = ${fmtLR(u.lr)}.</div>`;
+  }
+
+  return `<div class="tip-title">${esc(neuronName(l, i, nL))} → ${esc(neuronName(l + 1, j, nL))}</div>
+    <div class="tip-sub">Weight · ${esc(layerName(l, nL))} → ${esc(layerName(l + 1, nL))} layer</div>
+    <dl class="tip-grid">${rows}</dl>`;
+}
+
+function neuronTipHTML(step, d, l, j) {
+  const nL = d.architecture.length;
+  const out = l === nL - 1;
+  let rows = "";
+  if (l === 0) {
+    rows += tipRow("raw x", fmtNum(d.features_raw[j], 3));
+    rows += tipRow("x̂ = (x − μ)/σ", fmtNum(d.features_norm[j]), `${signCls(d.features_norm[j])} tip-strong`);
+  } else {
+    const b = d.biases[l - 1][j];
+    rows += tipRow(`bias b${sub(j + 1)}`, fmtNum(b), signCls(b));
+    if (fwdComputed(step, l)) {
+      const z = d.pre_activations[l - 1][j], a = d.activations[l][j];
+      rows += tipRow(`z${sub(j + 1)}`, fmtNum(z), signCls(z));
+      rows += tipRow(out ? "ŷ = σ(z)" : "a = ReLU(z)", fmtNum(a), `${out ? "vhl" : signCls(a)} tip-strong`);
+      if (out) rows += tipRow("true y", `${d.true_label} (${CLS[d.true_label]})`);
+    } else {
+      rows += `<div class="tip-note">z and a are computed in a later forward step.</div>`;
+    }
+    if (gradComputed(step, l)) {
+      const dz = d.grad_z[l - 1][j];
+      rows += tipSep();
+      if (!out && d.grad_a_hidden && d.grad_a_hidden[l - 1]) {
+        const da = d.grad_a_hidden[l - 1][j];
+        rows += tipRow("∂L/∂a", fmtNum(da), signCls(da));
+      }
+      rows += tipRow(`δ = ∂L/∂z`, fmtNum(dz), `${signCls(dz)} tip-strong`);
+    }
+    if (step.phase === "update") {
+      const u = updateVals(step, d, l - 1, j, null);
+      rows += tipSep();
+      rows += tipRow("bias old → new", `${fmtNum(u.old)} → ${fmtNum(u.nw)}`, signCls(u.nw));
+    }
+  }
+  return `<div class="tip-title">${esc(neuronName(l, j, nL))}</div>
+    <div class="tip-sub">${esc(layerName(l, nL))} layer${l > 0 ? ` · ${out ? "sigmoid" : "ReLU"}` : " · feature"}</div>
+    <dl class="tip-grid">${rows}</dl>`;
 }
 
 /* ════════════════════════════════════════════════════════

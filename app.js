@@ -207,7 +207,7 @@ async function apiInit() {
     d = await res.json();
   } catch (e) {
     document.getElementById("net-placeholder").innerHTML =
-      `<div>⚠ Cannot reach server.<br>Run: <code>uv run python app.py</code> (or <code>./start.sh</code>)<br>Then open <strong>http://127.0.0.1:8080</strong></div>`;
+      `<div>⚠ Cannot reach server.<br>Start it on the server with <code>./start.sh --detach</code> and open the trycloudflare.com URL it prints.</div>`;
     return;
   }
 

@@ -18,40 +18,40 @@ weights change step by step.
 
 ## Quickstart
 
-Requires [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) and
+[cloudflared](https://github.com/cloudflare/cloudflared/releases). The app is meant to
+run on a machine you only reach over SSH, and to be used through a public Cloudflare
+quick tunnel (no account or DNS setup).
 
 ```bash
-uv sync          # create .venv and install locked dependencies
-./start.sh       # or: uv run python app.py
+uv sync               # create .venv and install locked dependencies
+./start.sh --detach   # serve + tunnel in the background; survives closing SSH
+./start.sh --status   # is it running? prints the https://<random>.trycloudflare.com URL
+./start.sh --stop     # stop server and tunnel
 ```
 
-Open http://127.0.0.1:8080. Set `PORT` to use a different port, for example `PORT=5000 ./start.sh`.
+`./start.sh` with no flag does the same in the foreground (Ctrl+C stops it), which is
+handy inside `tmux`. A new trycloudflare URL can take up to a minute to start resolving.
+The URL changes on every start. Logs are in `.run/` (`tunnel.log`, `cloudflared.log`).
 
-## Share it with a Cloudflare quick tunnel
+The server binds to `127.0.0.1` only (gunicorn, one worker), on the first free port from
+8090 upwards, or on `$PORT` if you set it. It refuses a busy port, so it can never publish
+some other local service by mistake. If either gunicorn or cloudflared exits, the other
+one is stopped too.
 
-To get a temporary public URL without an account or any DNS setup:
+If cloudflared is missing, the script prints install instructions (the `.deb` or the
+standalone binary from the releases page on Linux, `brew install cloudflared` on macOS).
 
-```bash
-./tunnel.sh      # or: ./start.sh --tunnel
-```
+For development without a tunnel: `./start.sh --local` (Flask dev server on
+`http://127.0.0.1:${PORT:-8080}`; reach it over SSH with `ssh -L 8080:127.0.0.1:8080 host`).
 
-This starts the app with gunicorn on `127.0.0.1:$PORT` and runs
-`cloudflared tunnel --url http://localhost:$PORT`. cloudflared prints a
-`https://<random>.trycloudflare.com` URL. Press Ctrl+C to stop the tunnel and the server.
-If either process exits, the script stops the other one too.
-
-The script refuses to start if another process already listens on `$PORT`, so it can't
-publish some other local service by mistake. Pick a free port with `PORT=8090 ./tunnel.sh`.
+## Per-visitor state
 
 Everyone who opens the URL gets their own network. A random id in an HttpOnly cookie
 selects that visitor's architecture, weights, epoch count and loss history, so students
 never apply each other's gradients. The server keeps up to 500 sessions in memory,
 evicting the least recently used and dropping any that sit idle for 6 hours. Restarting
 the server resets all of them.
-
-You need [cloudflared](https://github.com/cloudflare/cloudflared/releases). The script
-prints install instructions if it can't find it (`brew install cloudflared` on macOS, or
-the `.deb` or standalone binary from the releases page on Linux).
 
 ## Deploying
 

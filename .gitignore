@@ -222,3 +222,6 @@ __marimo__/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Runtime files from start.sh / tunnel.sh (pid, URL, logs)
+.run/

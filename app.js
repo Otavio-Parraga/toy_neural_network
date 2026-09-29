@@ -186,7 +186,7 @@ async function apiInit() {
     d = await res.json();
   } catch (e) {
     document.getElementById("net-placeholder").innerHTML =
-      `<div>⚠ Cannot reach server.<br>Run: <code>conda run -n python3 python app.py</code><br>Then open <strong>http://127.0.0.1:8080</strong></div>`;
+      `<div>⚠ Cannot reach server.<br>Run: <code>uv run python app.py</code> (or <code>./start.sh</code>)<br>Then open <strong>http://127.0.0.1:8080</strong></div>`;
     return;
   }
 

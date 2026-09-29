@@ -7,7 +7,66 @@ const MAX_N = 6;           // max neurons to draw per layer
 const FEAT  = ["Weight (kg)", "Ear Point.", "Meow/Bark", "Agility"];
 const FEAT_FULL = ["Weight (kg)", "Ear Pointiness", "Meow/Bark Ratio", "Agility Score"];
 const CLS   = ["Cat 🐱", "Dog 🐶"];
-const CCOL  = ["#818cf8", "#fb923c"];
+const CCOL  = ["#5d59a8", "#9a6130"];   // [cat, dog]; refreshed in place from --cat / --dog by syncThemeColors()
+
+/* ════════════════════════════════════════════════════════
+   Theme colors (read from CSS custom properties in style.css)
+   ════════════════════════════════════════════════════════ */
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// Resolved palette for the active theme. Call at render time (colors change on toggle).
+function theme() {
+  return {
+    bg:          css("--bg"),
+    surface:     css("--surface"),
+    border:      css("--border"),
+    text:        css("--text"),
+    textDim:     css("--text-dim"),
+    textMuted:   css("--text-muted"),
+    textFaint:   css("--text-faint"),
+    accent:      css("--accent"),
+    fwd:         css("--fwd"),
+    bwd:         css("--bwd"),
+    bwdSoft:     css("--bwd-soft"),
+    pos:         css("--pos"),
+    neg:         css("--neg"),
+    wInc:        css("--w-inc"),
+    wDec:        css("--w-dec"),
+    edgePos:     css("--edge-pos"),
+    edgeNeg:     css("--edge-neg"),
+    edgeIdle:    css("--edge-idle"),
+    highlight:   css("--highlight"),
+    cat:         css("--cat"),
+    dog:         css("--dog"),
+    nodeFill:    css("--node-fill"),
+    nodeStroke:  css("--node-stroke"),
+    nodeStrokeActive: css("--node-stroke-active"),
+    inkOnLight:  css("--ink-on-light"),
+    inkOnDark:   css("--ink-on-dark"),
+    chartGrid:   css("--chart-grid"),
+  };
+}
+
+// Readable text color on top of an arbitrary fill.
+function inkOn(fill, T = theme()) {
+  const L = d3.lab(fill).l;   // perceptual lightness 0–100
+  return (isNaN(L) || L > 60) ? T.inkOnLight : T.inkOnDark;
+}
+
+// Color with alpha, for Chart.js fills etc.
+function withAlpha(color, a) {
+  const c = d3.color(color);
+  if (!c) return color;
+  c.opacity = a;
+  return c.formatRgb();
+}
+
+function syncThemeColors() {
+  const T = theme();
+  CCOL[0] = T.cat || CCOL[0];
+  CCOL[1] = T.dog || CCOL[1];
+}
+syncThemeColors();
 
 /* ════════════════════════════════════════════════════════
    State
@@ -284,6 +343,7 @@ function drawNetwork(step, d) {
   const H  = 420;
   const ML = 100, MR = 60, MT = 44, MB = 24;
   const nL = arch.length;
+  const T  = theme();
 
   const svg = d3.select("#net-container").append("svg").attr("width", W).attr("height", H);
 
@@ -328,7 +388,7 @@ function drawNetwork(step, d) {
 
     srcYs.forEach((sy, si) => {
       dstYs.forEach((dy, di) => {
-        let color   = "#1e3a5f";
+        let color   = T.edgeIdle;
         let width   = 0.5;
         let opacity = 0.18;
         let extraClass = "";
@@ -338,7 +398,7 @@ function drawNetwork(step, d) {
           if (di < dw.length && si < dw[di].length) {
             const delta = dw[di][si];
             const mag   = Math.min(Math.abs(delta) * 8, 1);
-            color   = delta > 0 ? "#3b82f6" : "#ef4444";
+            color   = delta > 0 ? T.wInc : T.wDec;
             width   = 0.5 + mag * 3;
             opacity = 0.15 + mag * 0.7;
           }
@@ -347,14 +407,14 @@ function drawNetwork(step, d) {
           if (di < w.length && si < w[di].length) {
             const wv  = w[di][si];
             const mag = Math.min(Math.abs(wv) / 2, 1);
-            color   = wv > 0 ? "#1d4ed8" : "#7f1d1d";
+            color   = wv > 0 ? T.edgePos : T.edgeNeg;
             width   = 0.3 + mag * 2;
             opacity = 0.08 + mag * 0.45;
           }
         }
 
-        if (isFwdActive) { color = "#22c55e"; width = Math.max(width, 1.2); opacity = Math.max(opacity, 0.55); extraClass = "edge-pulse"; }
-        if (isBwdActive) { color = "#f97316"; width = Math.max(width, 1.2); opacity = Math.max(opacity, 0.55); extraClass = "edge-pulse"; }
+        if (isFwdActive) { color = T.fwd; width = Math.max(width, 1.2); opacity = Math.max(opacity, 0.55); extraClass = "edge-pulse"; }
+        if (isBwdActive) { color = T.bwd; width = Math.max(width, 1.2); opacity = Math.max(opacity, 0.55); extraClass = "edge-pulse"; }
 
         const line = svg.append("line")
           .attr("x1", xOf(l)).attr("y1", sy)
@@ -373,7 +433,7 @@ function drawNetwork(step, d) {
       svg.append("text")
         .attr("x", midX).attr("y", midY - 18)
         .attr("text-anchor", "middle")
-        .attr("fill", "#f97316").attr("font-size", "14px")
+        .attr("fill", T.bwd).attr("font-size", "14px")
         .text("← ∇");
     }
     if (isFwdActive) {
@@ -382,7 +442,7 @@ function drawNetwork(step, d) {
       svg.append("text")
         .attr("x", midX).attr("y", midY - 18)
         .attr("text-anchor", "middle")
-        .attr("fill", "#22c55e").attr("font-size", "14px")
+        .attr("fill", T.fwd).attr("font-size", "14px")
         .text("→");
     }
   }
@@ -401,14 +461,14 @@ function drawNetwork(step, d) {
     svg.append("text")
       .attr("x", xs).attr("y", MT - 20)
       .attr("text-anchor", "middle")
-      .attr("fill", isHL ? "#fbbf24" : "#475569")
+      .attr("fill", isHL ? T.highlight : T.textMuted)
       .attr("font-size", "11px").attr("font-weight", isHL ? "700" : "400")
       .text(lname);
     if (fnname) {
       svg.append("text")
         .attr("x", xs).attr("y", MT - 8)
         .attr("text-anchor", "middle")
-        .attr("fill", isHL ? "#fbbf24" : "#334155")
+        .attr("fill", isHL ? T.highlight : T.textFaint)
         .attr("font-size", "9px")
         .text(fnname);
     }
@@ -416,7 +476,7 @@ function drawNetwork(step, d) {
       svg.append("text")
         .attr("x", xs).attr("y", H - MB + 14)
         .attr("text-anchor", "middle")
-        .attr("fill", "#475569").attr("font-size", "9px")
+        .attr("fill", T.textMuted).attr("font-size", "9px")
         .text(`+ ${nN - MAX_N} more`);
     }
 
@@ -425,8 +485,8 @@ function drawNetwork(step, d) {
       const g    = svg.append("g").attr("transform", `translate(${xs},${y})`);
 
       // Determine fill / stroke based on phase + layer
-      let fill   = "#1e293b";
-      let stroke = "#334155";
+      let fill   = T.nodeFill;
+      let stroke = T.nodeStroke;
       let showVal = null;
 
       // Forward: show activation once computed
@@ -437,13 +497,13 @@ function drawNetwork(step, d) {
 
       if (fwdComputed && act !== null) {
         if (l === nL - 1) {
-          fill = d3.interpolateRgb("#818cf8", "#fb923c")(act);
+          fill = d3.interpolateRgb(T.cat, T.dog)(act);
         } else if (l === 0) {
-          fill = d3.interpolateRgb("#1e3a5f", "#22c55e")(Math.min(Math.abs(act) / 2, 1));
+          fill = d3.interpolateRgb(T.nodeFill, T.fwd)(Math.min(Math.abs(act) / 2, 1));
         } else {
-          fill = d3.interpolateRgb("#1e293b", "#22c55e")(Math.min(act, 1));
+          fill = d3.interpolateRgb(T.nodeFill, T.fwd)(Math.min(act, 1));
         }
-        stroke = "#475569";
+        stroke = T.nodeStrokeActive;
         showVal = act.toFixed(2);
       }
 
@@ -451,8 +511,8 @@ function drawNetwork(step, d) {
       if (isBwd && d.grad_z && step.wIdx < d.grad_z.length) {
         const gz = d.grad_z[step.wIdx];
         if (gz && ni < gz.length) {
-          fill   = d3.interpolateRgb("#7c2d12", "#f97316")(Math.min(Math.abs(gz[ni]) * 3, 1));
-          stroke = "#f97316";
+          fill   = d3.interpolateRgb(T.bwdSoft, T.bwd)(Math.min(Math.abs(gz[ni]) * 3, 1));
+          stroke = T.bwd;
           showVal = gz[ni].toFixed(3);
         }
       }
@@ -461,7 +521,7 @@ function drawNetwork(step, d) {
       if (isHL) {
         g.append("circle")
           .attr("r", R + 5).attr("fill", "none")
-          .attr("stroke", "#fbbf24").attr("stroke-width", 1.5).attr("opacity", 0.5)
+          .attr("stroke", T.highlight).attr("stroke-width", 1.5).attr("opacity", 0.5)
           .attr("filter", "url(#glow)");
       }
 
@@ -472,7 +532,7 @@ function drawNetwork(step, d) {
       if (showVal != null) {
         g.append("text")
           .attr("text-anchor", "middle").attr("dy", "0.35em")
-          .attr("fill", "white").attr("font-size", "9px").attr("font-weight", "bold")
+          .attr("fill", inkOn(fill, T)).attr("font-size", "9px").attr("font-weight", "bold")
           .text(showVal);
       }
 
@@ -481,21 +541,21 @@ function drawNetwork(step, d) {
         svg.append("text")
           .attr("x", xs - R - 6).attr("y", y).attr("dy", "0.35em")
           .attr("text-anchor", "end")
-          .attr("fill", isHL ? "#e2e8f0" : "#475569").attr("font-size", "10px")
+          .attr("fill", isHL ? T.text : T.textMuted).attr("font-size", "10px")
           .text(FEAT[ni]);
       }
 
       // Output layer: class labels on the right
       if (l === nL - 1 && ni === 0) {
         svg.append("text").attr("x", xs + R + 8).attr("y", y - 8)
-          .attr("fill", "#818cf8").attr("font-size", "10px").attr("font-weight", "600")
+          .attr("fill", T.cat).attr("font-size", "10px").attr("font-weight", "600")
           .text("Cat 🐱");
         svg.append("text").attr("x", xs + R + 8).attr("y", y + 8)
-          .attr("fill", "#fb923c").attr("font-size", "10px").attr("font-weight", "600")
+          .attr("fill", T.dog).attr("font-size", "10px").attr("font-weight", "600")
           .text("Dog 🐶");
         if (act !== null) {
           svg.append("text").attr("x", xs + R + 8).attr("y", y + 24)
-            .attr("fill", "#64748b").attr("font-size", "9px")
+            .attr("fill", T.textDim).attr("font-size", "9px")
             .text(`p=${act.toFixed(3)}`);
         }
       }
@@ -530,7 +590,7 @@ function renderInfo(step, d) {
                 <td class="${norm[i] >= 0 ? "vp" : "vn"}">${norm[i].toFixed(3)}</td></tr>
           `).join("")}
         </table>
-        <p style="margin-top:10px;font-size:12px;color:#64748b">
+        <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">
           Features are <strong>standardized</strong>: x̂ = (x − μ) / σ<br>
           These 4 values enter the network as input activations.
         </p>`;
@@ -617,7 +677,7 @@ function renderInfo(step, d) {
           <tr><td>Prediction  ŷ</td><td>${yhat.toFixed(4)}</td></tr>
           <tr><td>Loss  L</td><td class="vhl" style="font-size:16px">${d.loss.toFixed(4)}</td></tr>
         </table>
-        <p style="margin-top:10px;font-size:12px;color:#64748b">
+        <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">
           High loss → the network is wrong (or uncertain).<br>
           The backward pass will compute how to reduce this loss.
         </p>`;
@@ -634,7 +694,7 @@ function renderInfo(step, d) {
       const prob = d.probability;
       title.textContent = "Backward — Output Layer Gradients";
       body.innerHTML = `
-        <p style="font-size:12px;color:#94a3b8;margin-bottom:8px">
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">
           For <strong>BCE + Sigmoid</strong>, the gradient simplifies elegantly:
         </p>
         <table>
@@ -649,7 +709,7 @@ function renderInfo(step, d) {
               <td class="${dz >= 0 ? "vp" : "vn"}">${dz.toFixed(4)}</td>
               <td style="font-size:11px">= dz</td></tr>
         </table>
-        <p style="margin-top:10px;font-size:12px;color:#64748b">
+        <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">
           ${dz > 0 ? "dz > 0: output was too high (reduce it)" : "dz < 0: output was too low (increase it)"}<br>
           This gradient now propagates backward to the hidden layer.
         </p>`;
@@ -683,7 +743,7 @@ function renderInfo(step, d) {
           <tr><th>Neuron</th><th>da (received)</th><th>ReLU'</th><th>dz = da·ReLU'</th></tr>
           ${rows}
         </table>
-        <p style="margin-top:8px;font-size:12px;color:#64748b">
+        <p style="margin-top:8px;font-size:12px;color:var(--text-muted)">
           Neurons with z≤0 had ReLU output = 0.<br>
           Their gradient is <strong>blocked</strong> (dead neurons).
         </p>`;
@@ -708,7 +768,7 @@ function renderInfo(step, d) {
                 <td>${ud.loss_before.toFixed(4)}</td>
                 <td class="${ud.loss_after < ud.loss_before ? "vp" : "vn"}">${ud.loss_after.toFixed(4)}</td></tr>
           </table>
-          <p style="margin-top:10px;font-size:13px;color:#86efac">
+          <p style="margin-top:10px;font-size:13px;color:var(--pos)">
             ✓ Weights updated! Loss ${ud.loss_after < ud.loss_before ? "decreased" : "changed"} by ${Math.abs(pct)}%.<br>
             Run <strong>▶ Compute</strong> again to do the next training step.
           </p>`;
@@ -718,12 +778,11 @@ function renderInfo(step, d) {
           <p style="font-size:13px;margin-bottom:10px">
             All gradients computed. Gradient descent will update every weight:
           </p>
-          <div style="background:#0f172a;border-radius:8px;padding:12px;font-family:monospace;font-size:12px;color:#94a3b8">
-W  ← W  − α · dL/dW\nb  ← b  − α · dL/db\nα  = ${lr}
+          <div class="update-rule">W  ← W  − α · dL/dW\nb  ← b  − α · dL/db\nα  = ${lr}
           </div>
-          <p style="margin-top:10px;font-size:12px;color:#64748b">
-            • Connections lit in <span style="color:#3b82f6">blue</span>: weight increases (dw &lt; 0)<br>
-            • Connections lit in <span style="color:#ef4444">red</span>: weight decreases (dw &gt; 0)
+          <p style="margin-top:10px;font-size:12px;color:var(--text-muted)">
+            • Connections lit in <span style="color:var(--w-inc)">blue</span>: weight increases (dw &lt; 0)<br>
+            • Connections lit in <span style="color:var(--w-dec)">rose</span>: weight decreases (dw &gt; 0)
           </p>`;
       }
       fbox.style.display = "none";
@@ -752,6 +811,7 @@ function buildSampleSelect() {
 function renderLossChart() {
   const ctx = document.getElementById("loss-chart").getContext("2d");
   if (st.lossChart) st.lossChart.destroy();
+  const T = theme();
   st.lossChart = new Chart(ctx, {
     type: "line",
     data: {
@@ -759,8 +819,10 @@ function renderLossChart() {
       datasets: [{
         label: "Mean batch loss per update",
         data: st.lossHistory,
-        borderColor: "#6366f1",
-        backgroundColor: "rgba(99,102,241,.08)",
+        borderColor: T.accent,
+        backgroundColor: withAlpha(T.accent, 0.1),
+        pointBackgroundColor: T.accent,
+        pointBorderColor: T.surface,
         borderWidth: 2,
         pointRadius: st.lossHistory.length < 30 ? 3 : 0,
         fill: true, tension: 0.3,
@@ -770,12 +832,12 @@ function renderLossChart() {
       responsive: true, maintainAspectRatio: false,
       animation: { duration: 400 },
       plugins: {
-        legend: { labels: { color: "#94a3b8", font: { size: 11 } } },
-        tooltip: { callbacks: { label: c => `Loss: ${c.raw.toFixed(4)}` } },
+        legend: { labels: { color: T.textDim, font: { size: 11 } } },
+        tooltip: { backgroundColor: T.text, titleColor: T.bg, bodyColor: T.bg, callbacks: { label: c => `Loss: ${c.raw.toFixed(4)}` } },
       },
       scales: {
-        x: { ticks: { color: "#475569", maxTicksLimit: 8 }, grid: { color: "#1e293b" } },
-        y: { ticks: { color: "#475569" }, grid: { color: "#1e293b" }, beginAtZero: false },
+        x: { ticks: { color: T.textMuted, maxTicksLimit: 8 }, grid: { color: T.chartGrid }, border: { color: T.border } },
+        y: { ticks: { color: T.textMuted }, grid: { color: T.chartGrid }, border: { color: T.border }, beginAtZero: false },
       },
     },
   });
@@ -904,3 +966,52 @@ function renderBatchPanel(step, d) {
   panel.querySelectorAll("[data-k]").forEach(el =>
     el.addEventListener("click", () => setFocusSample(parseInt(el.dataset.k))));
 }
+
+/* ════════════════════════════════════════════════════════
+   Theme toggle (light / dark)
+   ════════════════════════════════════════════════════════ */
+const THEME_KEY = "mlp-theme";
+
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+}
+
+function updateThemeToggleLabel() {
+  const btn = document.getElementById("theme-toggle");
+  if (!btn) return;
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  btn.setAttribute("aria-label", `Switch to ${next} theme`);
+  btn.setAttribute("title", `Switch to ${next} theme`);
+}
+
+// Re-apply theme colors to everything drawn by JS (SVG network, info panel, loss chart).
+function refreshThemedViews() {
+  syncThemeColors();
+  if (st.steps.length && st.data) goStep(st.step);
+  if (st.lossChart) renderLossChart();
+}
+
+function setTheme(t, persist = true) {
+  document.documentElement.setAttribute("data-theme", t);
+  if (persist) { try { localStorage.setItem(THEME_KEY, t); } catch (e) {} }
+  updateThemeToggleLabel();
+  refreshThemedViews();
+}
+
+if (window.Chart) Chart.defaults.font.family = '"Inter", ui-sans-serif, system-ui, sans-serif';
+
+window.addEventListener("DOMContentLoaded", () => {
+  updateThemeToggleLabel();
+  const btn = document.getElementById("theme-toggle");
+  if (btn) btn.addEventListener("click", () => setTheme(currentTheme() === "dark" ? "light" : "dark"));
+
+  // Follow OS changes until the user makes an explicit choice.
+  const mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+  if (mq && mq.addEventListener) {
+    mq.addEventListener("change", e => {
+      let stored = null;
+      try { stored = localStorage.getItem(THEME_KEY); } catch (err) {}
+      if (!stored) setTheme(e.matches ? "dark" : "light", false);
+    });
+  }
+});

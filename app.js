@@ -188,7 +188,9 @@ function wireControls() {
   });
 }
 
-function getLR() { return Math.pow(10, parseFloat(document.getElementById("sl-lr").value)); }
+// Round to the same 2 significant digits the UI shows, so the α the server
+// applies matches the α in the displayed formulas.
+function getLR() { return +Math.pow(10, parseFloat(document.getElementById("sl-lr").value)).toPrecision(2); }
 
 /* ════════════════════════════════════════════════════════
    API: init
@@ -268,11 +270,23 @@ async function apiCompute() {
    ════════════════════════════════════════════════════════ */
 async function apiUpdate() {
   const lr = getLR();
-  const res = await fetch(`${API}/api/update`, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ lr }),
-  });
-  const d = await res.json();
+  const btn = document.getElementById("btn-update");
+  if (btn.disabled) return;
+  btn.disabled = true;   // guard against double-clicks applying the update twice
+  let d;
+  try {
+    const res = await fetch(`${API}/api/update`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ lr }),
+    });
+    d = await res.json();
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+  } catch (e) {
+    document.getElementById("compute-hint").textContent = `Update failed: ${e.message}`;
+    return;
+  } finally {
+    btn.disabled = false;
+  }
   st.lossHistory = d.loss_history;
   updateEpoch(d.epoch);
   renderLossChart();
